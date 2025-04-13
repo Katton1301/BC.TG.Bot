@@ -1,0 +1,31 @@
+{
+    "ru": {
+        "greeting": "Привет! Я бот 'Быки и Коровы'. Вот, что я умею!",
+        "help": "Я бот 'Быки и Коровы'. Я могу сыграть с тобой или ты можешь сыграть против случайных игроков. Так же ты можешь сыграть с друзьями через лобби. Так же могу расказать правила иргы.",
+        "game": "Играть",
+        "rules": "Правила",
+        "fullRules": "Правила игры 'Быки и Коровы'...",
+        "lang": "Сменить язык",
+        "feedback": "Обратная связь",
+        "chooseGameMode": "Выберите режим игры",
+        "snglePlay": "Одиночная игра",
+        "botPlay": "Играть против бота",
+        "randomPlay": "Играть против случайного игрока",
+        "createLobby": "Создать Лобби",
+        "enterLobby": "Войти в Лобби"
+    },
+    "en": {
+        "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
+        "help": "I am a bot 'Bulls and Cows'. I can play with you or you can play against random players. You can also play with friends through the lobby. I can also tell you the rules of the game.",
+        "game": "Play",
+        "rules": "rules",
+        "lang": "Change language",
+        "feedback": "feedback",
+        "chooseGameMode": "Choose game mode",
+        "snglePlay": "Single play",
+        "botPlay": "Play versus Bot",
+        "randomPlay": "Play versus random player",
+        "createLobby": "Create a lobby",
+        "enterLobby": "Enter the lobby"
+    }
+}
