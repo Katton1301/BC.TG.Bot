@@ -12,7 +12,14 @@
         "botPlay": "Играть против бота",
         "randomPlay": "Играть против случайного игрока",
         "createLobby": "Создать Лобби",
-        "enterLobby": "Войти в Лобби"
+        "enterLobby": "Войти в Лобби",
+        "gameCreated": "Игра создана!",
+        "yourTurn": "Ваш ход!",
+        "invalidNumberFormat": "Неправильный формат числа!",
+        "bulls": "Б",
+        "cows": "К",
+        "youWon": "Вы выиграли!",
+        "gameFinished": "Игра закончена!"
     },
     "en": {
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
@@ -26,6 +33,13 @@
         "botPlay": "Play versus Bot",
         "randomPlay": "Play versus random player",
         "createLobby": "Create a lobby",
-        "enterLobby": "Enter the lobby"
+        "enterLobby": "Enter the lobby",
+        "gameCreated": "Game created!",
+        "yourTurn": "Your turn!",
+        "invalidNumberFormat": "Invalid number format!",
+        "bulls": "B",
+        "cows": "C",
+        "youWon": "You won!",
+        "gameFinished": "Game finished!"
     }
 }

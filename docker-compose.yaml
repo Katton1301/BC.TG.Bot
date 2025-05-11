@@ -99,8 +99,10 @@ services:
       echo 'Waiting for Kafka to be ready...';
       cub kafka-ready -b kafka:9092 1 30;
       echo 'Creating topics...';
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic game_command --partitions 3 --replication-factor 1;
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic game_response --partitions 3 --replication-factor 1;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic bot_game --partitions 3 --replication-factor 1;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic bot_db --partitions 3 --replication-factor 1;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic game_bot --partitions 3 --replication-factor 1;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic db_bot --partitions 3 --replication-factor 1;
       echo 'Topics created successfully';
       exit 0;
       "
