@@ -10,6 +10,10 @@
         "chooseGameMode": "Выберите режим игры",
         "singlePlay": "Одиночная игра",
         "botPlay": "Играть против бота",
+        "chooseBotDifficulty": "Выберите сложность бота",
+        "easy": "Легко",
+        "medium": "Средне",
+        "hard": "Сложно",
         "randomPlay": "Играть против случайного игрока",
         "createLobby": "Создать Лобби",
         "enterLobby": "Войти в Лобби",
@@ -19,18 +23,27 @@
         "bulls": "Б",
         "cows": "К",
         "youWon": "Вы выиграли!",
-        "gameFinished": "Игра закончена!"
+        "yourPlace": "Ваше место",
+        "gameFinished": "Игра закончена!",
+        "you": "Вы",
+        "player": "Игрок",
+        "bot": "Бот",
+        "waitPlayers": "игроков еще не похадило."
     },
     "en": {
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
         "help": "I am a bot 'Bulls and Cows'. I can play with you or you can play against random players. You can also play with friends through the lobby. I can also tell you the rules of the game.",
         "game": "Play",
-        "rules": "rules",
+        "rules": "Rules",
         "lang": "Change language",
         "feedback": "feedback",
         "chooseGameMode": "Choose game mode",
         "singlePlay": "Single play",
         "botPlay": "Play versus Bot",
+        "chooseBotDifficulty": "Choose Bot difficulty",
+        "easy": "Easy",
+        "medium": "Medium",
+        "hard": "Hard",
         "randomPlay": "Play versus random player",
         "createLobby": "Create a lobby",
         "enterLobby": "Enter the lobby",
@@ -40,6 +53,11 @@
         "bulls": "B",
         "cows": "C",
         "youWon": "You won!",
-        "gameFinished": "Game finished!"
+        "yourPlace": "Your place",
+        "gameFinished": "Game finished!",
+        "you": "You",
+        "player": "Player",
+        "bot": "Bot",
+        "waitPlayers": "players have not joined yet."
     }
 }

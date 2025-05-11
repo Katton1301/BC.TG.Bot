@@ -7,7 +7,8 @@ from phrases import phrases
 
 router = Router()
 
-class GameStates(StatesGroup):
+class PlayerStates(StatesGroup):
+    choose_bot_difficulty = State()
     waiting_for_number = State()
 
 def setup_event_handler(eh):
@@ -16,7 +17,7 @@ def setup_event_handler(eh):
     router.message.register(rules_command, F.text.contains('правила') | F.text.contains('rules'))
     router.message.register(game_command, lambda msg: phrases.checkPhrase("game", str(msg.text)))
     router.message.register(single_play_command, lambda msg: phrases.checkPhrase("singlePlay", str(msg.text)))
-    router.message.register(handle_number_input, GameStates.waiting_for_number)
+    router.message.register(handle_number_input, PlayerStates.waiting_for_number)
     
     router.ee = eh
 
@@ -54,9 +55,25 @@ async def single_play_command(message: types.Message, state: FSMContext):
     eh = router.ee
     ok = await eh.start_single_game(message)
     if ok:
-        await state.set_state(GameStates.waiting_for_number)
+        await state.set_state(PlayerStates.waiting_for_number)
+    
+@router.message(lambda msg: phrases.checkPhrase("botPlay", str(msg.text)))
+async def single_play_command(message: types.Message, state: FSMContext):
+    await state.set_state(PlayerStates.choose_bot_difficulty)
+    lang = message.from_user.language_code
+    await message.answer(
+        phrases.dict("chooseBotDifficulty",lang),
+        reply_markup=kb.bot[lang])
 
-@router.message(GameStates.waiting_for_number)
+
+@router.message(PlayerStates.choose_bot_difficulty)
+async def handle_number_input(message: types.Message, state: FSMContext):
+    eh = router.ee
+    ok = await eh.start_bot_play(message)
+    if ok:
+        await state.set_state(PlayerStates.waiting_for_number)
+
+@router.message(PlayerStates.waiting_for_number)
 async def handle_number_input(message: types.Message, state: FSMContext):
     eh = router.ee
     finish = await eh.do_step(message)
