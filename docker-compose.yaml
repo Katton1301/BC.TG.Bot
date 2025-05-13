@@ -110,7 +110,7 @@ services:
 
   bc-server:
     build:
-      context: ../engine
+      context: https://github.com/Katton1301/BullsAndCows.git#master
       dockerfile: Dockerfile
     image: bc-server:latest
     container_name: bc-server
@@ -127,14 +127,13 @@ services:
       - kafka-network
     restart: unless-stopped
     ports:
-      - "8081:8081"  # Пример порта, замените на нужный
+      - "8081:8081"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       POSTGRES_HOST: bc-postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: bc-postgres
-
   db-controller-go:
     build:
       context: db-controller
@@ -155,7 +154,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: bc-postgres
-
   tg-bot:
     build:
       context: tg-bot
