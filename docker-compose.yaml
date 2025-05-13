@@ -50,7 +50,7 @@ services:
     networks:
       - kafka-network
 
-  bc_postgres:
+  bc-postgres:
     image: postgres:latest
     container_name: bc-postgres
     environment:
@@ -84,7 +84,7 @@ services:
       - kafka-network
     restart: unless-stopped
     depends_on:
-      - bc_postgres
+      - bc-postgres
 
   kafka-setup:
     image: confluentinc/cp-kafka:7.7.0
@@ -121,7 +121,7 @@ services:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
-      bc_postgres:
+      bc-postgres:
         condition: service_healthy
     networks:
       - kafka-network
@@ -130,28 +130,28 @@ services:
       - "8081:8081"  # Пример порта, замените на нужный
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      POSTGRES_HOST: bc_postgres
+      POSTGRES_HOST: bc-postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: bc-postgres
 
-  kafka-consumer-go:
+  db-controller-go:
     build:
-      context: ../database-consumer
+      context: db-controller
       dockerfile: Dockerfile
-    image: database-consumer:latest
+    image: db-controller:latest
     env_file:
       - .env
     depends_on:
       - bc-server
       - kafka
-      - bc_postgres
+      - bc-postgres
     networks:
       - kafka-network
     restart: unless-stopped
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      POSTGRES_HOST: bc_postgres
+      POSTGRES_HOST: bc-postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: bc-postgres
@@ -167,10 +167,10 @@ services:
     depends_on:
       - bc-server
       - kafka
-      - bc_postgres
+      - bc-postgres
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      POSTGRES_HOST: bc_postgres
+      POSTGRES_HOST: bc-postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
