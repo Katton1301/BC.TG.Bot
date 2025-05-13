@@ -29,7 +29,7 @@
         "player": "Игрок",
         "bot": "Бот",
         "step":"Ход",
-        "draw": "Ничья",
+        "draw": "Ничья!",
         "waitPlayers": "игроков еще не похадило."
     },
     "en": {
@@ -61,7 +61,7 @@
         "player": "Player",
         "bot": "Bot",
         "step": "Step",
-        "draw": "Draw",
+        "draw": "Draw!",
         "waitPlayers": "players have not joined yet."
     }
 }

@@ -325,6 +325,7 @@ class EventHandler:
                     result += f" - {'*'*4}: {steps[i]["bulls"]}{phrases.dict("bulls", lang)} {steps[i]["cows"]}{phrases.dict("cows", lang)}"
             else:
                 result += f"\n{game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
+
             if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
                 game_msg = {
                 "command": 15,  # Assuming 15 is FINISH_GAME command
@@ -345,7 +346,10 @@ class EventHandler:
 
             if game_response['game_stage'] == 'FINISHED':
                 if len(steps) == 2 and steps[0]['finished'] and steps[1]['finished']:
-                    result += f"\n{phrases.dict('gameFinished', lang)} {phrases.dict("draw", lang)}"
+                    await message.answer(
+                        f"{result}\n{phrases.dict('gameFinished', lang)} {phrases.dict("draw", lang)}",
+                        reply_markup=kb.main[lang]
+                        )
                 elif place == 1:
                     await message.answer(
                         f"{result}\n{phrases.dict("gameFinished", lang)} {phrases.dict("youWon", lang)}",
