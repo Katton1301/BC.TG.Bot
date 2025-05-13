@@ -28,6 +28,8 @@
         "you": "Вы",
         "player": "Игрок",
         "bot": "Бот",
+        "step":"Ход",
+        "draw": "Ничья",
         "waitPlayers": "игроков еще не похадило."
     },
     "en": {
@@ -58,6 +60,8 @@
         "you": "You",
         "player": "Player",
         "bot": "Bot",
+        "step": "Step",
+        "draw": "Draw",
         "waitPlayers": "players have not joined yet."
     }
 }

@@ -298,32 +298,33 @@ class EventHandler:
             }
             await self.kafka.send_to_bd(update_game_message)
             logger.info(f"Player {message.from_user.id} do step in game {game_id}")
-            place = steps[player_i]['place']
+            
+            place =  0
+            if 'place' in game_response:
+                place = game_response['place']
             lang = message.from_user.language_code
             result = ""
             bots = 0
             players = 0
             unfinished_players = 0
+
+            result += f"{phrases.dict('step', lang)} {steps[player_i]["step"]}"
             if len(steps) > 1:
-                result += f" \t{phrases.dict("you", lang)}\t"
+                result += f"\n{phrases.dict("you", lang)} -  {game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
                 for i in range(len(steps)):
                     if i == player_i:
                         continue
                     elif steps[i]["player"]:
-                        result += phrases.dict("player", lang) + " " + str(players) + "\t"
+                        result += f"\n{phrases.dict('player', lang)} {str(players + 1)}"
                         players += 1
                         if not steps[i]["finished"]:
                             unfinished_players += 1
                     else:
-                        result += phrases.dict("bot", lang) + " " + str(bots) + "\t"
+                        result += f"\n{phrases.dict('bot', lang)} {str(bots + 1)}"
                         bots += 1
-                result += "\n"
-
-            result += f"{steps[player_i]["step"]} {game_value}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
-            for i in range(len(steps)):
-                if i != player_i:
-                    result += f"\t****: {steps[i]["bulls"]}{phrases.dict("bulls", lang)} {steps[i]["cows"]}{phrases.dict("cows", lang)}"
-
+                    result += f" - {'*'*4}: {steps[i]["bulls"]}{phrases.dict("bulls", lang)} {steps[i]["cows"]}{phrases.dict("cows", lang)}"
+            else:
+                result += f"\n{game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
             if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
                 game_msg = {
                 "command": 15,  # Assuming 15 is FINISH_GAME command
@@ -339,12 +340,13 @@ class EventHandler:
                 if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                     raise Exception(f"Game service error: {game_response['result']}")
                 
-                #todo
                 steps = game_response['steps']
                 result += f"\n{steps[0]["step"]} {game_value}: {steps[0]["bulls"]}{phrases.dict("bulls", lang)} {steps[0]["cows"]}{phrases.dict("cows", lang)}"
 
             if game_response['game_stage'] == 'FINISHED':
-                if place == 1:
+                if len(steps) == 2 and steps[0]['finished'] and steps[1]['finished']:
+                    result += f"\n{phrases.dict('gameFinished', lang)} {phrases.dict("draw", lang)}"
+                elif place == 1:
                     await message.answer(
                         f"{result}\n{phrases.dict("gameFinished", lang)} {phrases.dict("youWon", lang)}",
                         reply_markup=kb.main[lang]
