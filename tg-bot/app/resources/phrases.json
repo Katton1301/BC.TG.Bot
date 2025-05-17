@@ -29,8 +29,11 @@
         "player": "Игрок",
         "bot": "Бот",
         "step":"Ход",
+        "steps": "Шагов",
         "draw": "Ничья!",
-        "waitPlayers": "игроков еще не похадило."
+        "waitPlayers": "игроков еще не похадило.",
+        "gameResults": "Результаты игры.",
+        "gaveUp": "Игрок Сдался!"
     },
     "en": {
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
@@ -61,7 +64,10 @@
         "player": "Player",
         "bot": "Bot",
         "step": "Step",
+        "steps": "Steps",
         "draw": "Draw!",
-        "waitPlayers": "players have not joined yet."
+        "waitPlayers": "players have not joined yet.",
+        "gameResults": "Game results.",
+        "gaveUp": "Player gave up!"
     }
 }

@@ -1,16 +1,22 @@
 package main
 
 import (
- "context"
- "encoding/json"
- "fmt"
- "log"
- "os"
- "time"
+  "context"
+  "encoding/json"
+  "fmt"
+  "log"
+  "math/rand"
+  "os"
+  "time"
 
- "github.com/confluentinc/confluent-kafka-go/v2/kafka"
- "github.com/jackc/pgx/v5"
+  "github.com/confluentinc/confluent-kafka-go/v2/kafka"
+  "github.com/jackc/pgx/v5"
 )
+
+
+var computerNames map[string][]string
+
+
 
 type PlayerData struct {
   Id   int64  `json:"id"`
@@ -38,11 +44,12 @@ type PlayerGameData struct {
 }
 
 type ComputerGameData struct {
-  ComputerId int64 `json:"computer_id"`
-  PlayerId   int64  `json:"player_id"`
-  ServerId int64 `json:"server_id"`
-  GameId int64 `json:"game_id"`
-  GameBrain string `json:"game_brain"`
+    ComputerId int64  `json:"computer_id"`
+    PlayerId   int64  `json:"player_id"`
+    ServerId   int64  `json:"server_id"`
+    GameId     int64  `json:"game_id"`
+    GameBrain  string `json:"game_brain"`
+    Name       string `json:"name,omitempty"`
 }
 
 type GamesHistoryData struct {
@@ -54,6 +61,17 @@ type GamesHistoryData struct {
   Bulls int `json:"bulls"`
   Cows int `json:"cows"`
   IsComputer bool `json:"is_computer"`
+}
+
+type GameNameData struct {
+    Id       int64  `json:"id"`
+    IsPlayer bool   `json:"is_player"`
+    Name     string `json:"name"`
+}
+
+type GameNamesResponse struct {
+    CorrelationId string         `json:"correlation_id"`
+    Names         []GameNameData `json:"names"`
 }
 
 type IDResponse struct {
@@ -72,6 +90,20 @@ type KafkaMessage struct {
   Command string          `json:"command"`
   CorrelationId string      `json:"correlation_id"`
   Data    json.RawMessage `json:"data"`
+}
+
+func loadComputerNames() error {
+    file, err := os.ReadFile("computer_names.json")
+    if err != nil {
+        return fmt.Errorf("failed to read computer names file: %w", err)
+    }
+
+    err = json.Unmarshal(file, &computerNames)
+    if err != nil {
+        return fmt.Errorf("failed to parse computer names: %w", err)
+    }
+
+    return nil
 }
 
 var producer *kafka.Producer
@@ -103,6 +135,10 @@ func main() {
    }
   }
  }()
+
+ if err := loadComputerNames(); err != nil {
+  log.Fatalf("failed to load computer names: %w", err)
+ }
 
  err = checkAndCreateTables(conn)
  if err != nil {
@@ -244,6 +280,17 @@ func main() {
      log.Printf("Failed to insert step: %v", err)
     }
 
+  case "get_game_names":
+    var gameId int64
+    if err := json.Unmarshal(kafkaMsg.Data, &gameId); err != nil {
+        log.Printf("Failed to parse game id: %v", err)
+        continue
+    }
+    err = handleGetGameNames(conn, kafkaMsg.CorrelationId, gameId)
+    if err != nil {
+        log.Printf("Failed to get game names: %v", err)
+    }
+
   // another commands
 
   default:
@@ -344,61 +391,73 @@ func handleUpdateGame(conn *pgx.Conn, game GameData) error {
 }
 
 func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer ComputerGameData) error {
-  var newID int64
-  
-  err := conn.QueryRow(context.Background(), "SELECT nextval('computers_id_seq')").Scan(&newID)
-  if err != nil {
-   return fmt.Errorf("failed to generate new ID: %w", err)
-  }
- 
-  _, err = conn.Exec(context.Background(),
-   `INSERT INTO computers(computer_id, player_id, server_id, game_id, game_brain) 
-   VALUES($1, $2, $3, $4, $5)`,
-   newID, computer.PlayerId, computer.ServerId, computer.GameId, computer.GameBrain)
- 
-  if err != nil {
-   return fmt.Errorf("failed to insert computer: %w", err)
-  }
- 
-  log.Printf("Inserted computer with id %d", newID)
- 
-  response := IDResponse{
-   CorrelationId: correlation_id,
-   Table:    "computers",
-   ID:    newID,
-  }
- 
-  responseBytes, err := json.Marshal(response)
-  if err != nil {
-   return fmt.Errorf("failed to marshal ID response: %w", err)
-  }
- 
-  producer_topic := "db_bot"
-  err = producer.Produce(&kafka.Message{
-   TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
-   Value:          responseBytes,
-  }, nil)
- 
-  if err != nil {
-   return fmt.Errorf("failed to send ID response: %w", err)
-  }
- 
-  return nil
+    var newID int64
+    
+    err := conn.QueryRow(context.Background(), "SELECT nextval('computers_id_seq')").Scan(&newID)
+    if err != nil {
+        return fmt.Errorf("failed to generate new ID: %w", err)
+    }
+
+    names, ok := computerNames[computer.GameBrain]
+    if !ok {
+        names = []string{"Unknown"}
+    }
+    rand.Seed(time.Now().UnixNano())
+
+    rand_i := rand.Intn(len(names))
+    log.Println(computer.GameBrain)
+    log.Println(len(names))
+    computer.Name = names[rand_i]
+    log.Println(computer.Name)
+
+    _, err = conn.Exec(context.Background(),
+        `INSERT INTO computers(computer_id, player_id, server_id, game_id, game_brain, name) 
+        VALUES($1, $2, $3, $4, $5, $6)`,
+        newID, computer.PlayerId, computer.ServerId, computer.GameId, computer.GameBrain, computer.Name)
+    
+    if err != nil {
+        return fmt.Errorf("failed to insert computer: %w", err)
+    }
+
+    log.Printf("Inserted computer with id %d and name %s", newID, computer.Name)
+
+    response := IDResponse{
+        CorrelationId: correlation_id,
+        Table:        "computers",
+        ID:           newID,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal ID response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send ID response: %w", err)
+    }
+
+    return nil
 }
 
-  func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
-    _, err := conn.Exec(context.Background(),
-     `INSERT INTO player_games(player_id, server_id, game_id, is_current_game, is_host) 
-     VALUES($1, $2, $3, $4, $5)`,
-     playerGame.PlayerId, playerGame.ServerId, playerGame.GameId, playerGame.IsCurrentGame, playerGame.IsHost)
-   
-    if err != nil {
-     return fmt.Errorf("failed to insert player game: %w", err)
-    }
-   
-    log.Printf("Inserted player game")
-    return nil
-   }
+func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
+  _, err := conn.Exec(context.Background(),
+    `INSERT INTO player_games(player_id, server_id, game_id, is_current_game, is_host) 
+    VALUES($1, $2, $3, $4, $5)`,
+    playerGame.PlayerId, playerGame.ServerId, playerGame.GameId, playerGame.IsCurrentGame, playerGame.IsHost)
+  
+  if err != nil {
+    return fmt.Errorf("failed to insert player game: %w", err)
+  }
+  
+  log.Printf("Inserted player game")
+  return nil
+}
 
    func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64) error {
     var gameID int64
@@ -533,7 +592,79 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
     log.Printf("Sent server games data for server_id %d", server_id)
     return nil
 }
-  
+
+func handleGetGameNames(conn *pgx.Conn, correlationId string, gameId int64) error {
+    var names []GameNameData
+
+    rows, err := conn.Query(context.Background(),
+        `SELECT p.id, p.username 
+         FROM players p
+         JOIN player_games pg ON p.id = pg.player_id
+         WHERE pg.game_id = $1`, gameId)
+    if err != nil {
+        return fmt.Errorf("failed to query players: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var id int64
+        var username string
+        if err := rows.Scan(&id, &username); err != nil {
+            return fmt.Errorf("failed to scan player row: %w", err)
+        }
+        names = append(names, GameNameData{
+            Id:       id,
+            IsPlayer: true,
+            Name:     username,
+        })
+    }
+
+    rows, err = conn.Query(context.Background(),
+        `SELECT computer_id, name 
+         FROM computers 
+         WHERE game_id = $1`, gameId)
+    if err != nil {
+        return fmt.Errorf("failed to query computers: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var id int64
+        var name string
+        if err := rows.Scan(&id, &name); err != nil {
+            return fmt.Errorf("failed to scan computer row: %w", err)
+        }
+        names = append(names, GameNameData{
+            Id:       id,
+            IsPlayer: false,
+            Name:     name,
+        })
+    }
+
+    response := GameNamesResponse{
+        CorrelationId: correlationId,
+        Names:         names,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send response: %w", err)
+    }
+
+    log.Printf("Sent game names for game_id %d", gameId)
+    return nil
+}
+
 func checkAndCreateTables(conn *pgx.Conn) error {
   var playersTableExists bool
   err := conn.QueryRow(context.Background(),
@@ -609,21 +740,22 @@ func checkAndCreateTables(conn *pgx.Conn) error {
   if err != nil {
     return err
   }
-  
+
   if !computerGamesTableExists {
-     _, err := conn.Exec(context.Background(),
-      `CREATE TABLE computers (
-        computer_id BIGINT,
-        player_id BIGINT,
-        server_id BIGINT,
-        game_id BIGINT,
-        game_brain TEXT
-      );
-      CREATE SEQUENCE computers_id_seq START 1;`)
-     if err != nil {
-      return err
-     }
-     log.Println("Table 'computers' and sequence 'computers_id_seq' created successfully")
+      _, err := conn.Exec(context.Background(),
+          `CREATE TABLE computers (
+              computer_id BIGINT,
+              player_id BIGINT,
+              server_id BIGINT,
+              game_id BIGINT,
+              game_brain TEXT,
+              name TEXT
+          );
+          CREATE SEQUENCE computers_id_seq START 1;`)
+      if err != nil {
+          return err
+      }
+      log.Println("Table 'computers' and sequence 'computers_id_seq' created successfully")
   }
 
   var gamesHistoryTableExists bool
@@ -650,8 +782,8 @@ func checkAndCreateTables(conn *pgx.Conn) error {
     }
     log.Println("Table 'games_history' created successfully")
   }
-  
-  return nil
+
+    return nil
 }
 
 func handleInsertStep(conn *pgx.Conn, step GamesHistoryData) error {

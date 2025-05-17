@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y \
     gcc
 
 WORKDIR /app
-COPY go.mod go.sum ./
+COPY go.mod go.sum computer_names.json ./
 RUN go mod download
 
 COPY . .
@@ -19,5 +19,6 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /db-server .
 COPY --from=builder /app/.env .
+COPY --from=builder /app/computer_names.json .
 
 CMD ["./db-server"]

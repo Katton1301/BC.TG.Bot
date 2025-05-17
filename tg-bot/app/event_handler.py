@@ -221,6 +221,50 @@ class EventHandler:
         else:
             await message.answer("Failed to start game")
         return ok
+    
+
+    def _generateStepsResult(self, steps, player_i, lang, names):
+        result = ""
+        game_value = steps[player_i]["game_value"]
+        result += f"{phrases.dict('step', lang)} {steps[player_i]["step"]}"
+        if len(steps) > 1:
+            result += f"\n{phrases.dict("you", lang)} -  {game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
+            for i in range(len(steps)):
+                if i == player_i:
+                    continue
+                name = next((d['name'] for d in names if d['id'] == steps[i]['id'] and d['is_player'] == steps[i]['player']), "Unknown")
+                if steps[i]["player"]:
+                    result += f"\n{phrases.dict('player', lang)} {name}"
+                else:
+                    result += f"\n{phrases.dict('bot', lang)} {name}"
+                result += f" - {'*'*4}: {steps[i]["bulls"]}{phrases.dict("bulls", lang)} {steps[i]["cows"]}{phrases.dict("cows", lang)}"
+        else:
+            result += f"\n{game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
+        return result
+    
+    def _generate_game_results(self, game_results, player_i, lang, names):
+        result = f"{phrases.dict('gameFinished', lang)}"
+        if len(game_results) == 2 and game_results[0]['place'] == game_results[1]['place']:
+            return f"{result} {phrases.dict("draw", lang)}"
+        elif game_results[player_i]['place'] == 1:
+            result += f"{phrases.dict("youWon", lang)}\n"
+        if len(game_results) > 1:
+            sorted_results = sorted(game_results, key=lambda x: x['place'])
+            result += f"{phrases.dict('gameResults', lang)}\n"
+            for i in range(len(sorted_results)):
+                name = next((d['name'] for d in names if d['id'] == sorted_results[i]['id'] and d['is_player'] == sorted_results[i]['player']), "Unknown")
+                if i == player_i:
+                    name = phrases.dict('you', lang)
+                elif sorted_results[i]['player']:
+                    name = f"{phrases.dict('player', lang)} {name}"
+                else:
+                    name = f"{phrases.dict('bot', lang)} {name}"
+                result += f'{sorted_results[i]['place']}. {name} - {sorted_results[i]['step']} {phrases.dict('steps', lang)}'
+                if sorted_results[i]['give_up']:
+                    result += f"{phrases.dict('gaveUp', lang)}\n"
+                else:
+                    result += f"\n"
+        return result
         
     async def do_step( self, message: types.Message ):
         try:
@@ -264,12 +308,11 @@ class EventHandler:
                         player_i = i
                     else:
                         continue
-
                 step_message = {
                     "command": "add_step",
                     "data": {
                         "game_id": game_id,
-                        "player_id": steps[i],
+                        "player_id": steps[i]["id"],
                         "server_id": SERVER_ID,
                         "step": steps[i]["step"],
                         "game_value": steps[i]["game_value"],
@@ -298,33 +341,31 @@ class EventHandler:
             }
             await self.kafka.send_to_bd(update_game_message)
             logger.info(f"Player {message.from_user.id} do step in game {game_id}")
-            
-            place =  0
-            if 'place' in game_response:
-                place = game_response['place']
-            lang = message.from_user.language_code
-            result = ""
-            bots = 0
-            players = 0
-            unfinished_players = 0
 
-            result += f"{phrases.dict('step', lang)} {steps[player_i]["step"]}"
-            if len(steps) > 1:
-                result += f"\n{phrases.dict("you", lang)} -  {game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
-                for i in range(len(steps)):
-                    if i == player_i:
-                        continue
-                    elif steps[i]["player"]:
-                        result += f"\n{phrases.dict('player', lang)} {str(players + 1)}"
-                        players += 1
-                        if not steps[i]["finished"]:
-                            unfinished_players += 1
-                    else:
-                        result += f"\n{phrases.dict('bot', lang)} {str(bots + 1)}"
-                        bots += 1
-                    result += f" - {'*'*4}: {steps[i]["bulls"]}{phrases.dict("bulls", lang)} {steps[i]["cows"]}{phrases.dict("cows", lang)}"
-            else:
-                result += f"\n{game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
+            create_msg = {
+                "command": "get_game_names",
+                "data": game_id,
+                "timestamp": str(datetime.now())
+            }
+            
+            db_response = await self.kafka.request_to_db(create_msg, timeout=5)
+            
+            if not db_response or 'names' not in db_response:
+                raise Exception("Invalid response from database: wrong names")
+            
+            names = db_response['names']
+            
+            lang = message.from_user.language_code
+            unfinished_players = 0
+            unstepped_players = 0
+            if 'unstepped_players' in game_response:
+                unstepped_players = game_response["unstepped_players"]
+
+            for i in range(len(steps)):
+                if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
+                    unfinished_players += 1
+
+            result = self._generateStepsResult(steps, player_i, lang, names)
 
             if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
                 game_msg = {
@@ -342,29 +383,40 @@ class EventHandler:
                     raise Exception(f"Game service error: {game_response['result']}")
                 
                 steps = game_response['steps']
-                result += f"\n{steps[0]["step"]} {game_value}: {steps[0]["bulls"]}{phrases.dict("bulls", lang)} {steps[0]["cows"]}{phrases.dict("cows", lang)}"
+                for i in range(len(steps)):
+                    result += f"\n{steps[0]["step"]} {game_value}: {steps[0]["bulls"]}{phrases.dict("bulls", lang)} {steps[0]["cows"]}{phrases.dict("cows", lang)}"
 
             if game_response['game_stage'] == 'FINISHED':
-                if len(steps) == 2 and steps[0]['finished'] and steps[1]['finished']:
-                    await message.answer(
-                        f"{result}\n{phrases.dict('gameFinished', lang)} {phrases.dict("draw", lang)}",
-                        reply_markup=kb.main[lang]
-                        )
-                elif place == 1:
-                    await message.answer(
-                        f"{result}\n{phrases.dict("gameFinished", lang)} {phrases.dict("youWon", lang)}",
-                        reply_markup=kb.main[lang]
-                        )
-                else:
-                    await message.answer(
-                        f"{result}\n{phrases.dict("gameFinished", lang)} {phrases.dict("yourPlace", lang)} - {place}",   
-                        reply_markup=kb.main[lang]
-                        )
+                await message.answer(result)
+                
+                game_msg = {
+                "command": 16,  # Assuming 16 is GAME_RESULT command
+                "server_id": SERVER_ID,
+                "player_id": message.from_user.id,
+                "game_id": game_id,
+                }
+                game_response = await self.kafka.request_to_game(game_msg, timeout=5)
+                if not game_response or 'result' not in game_response:
+                    raise Exception("Invalid do step response from game service")
+            
+                if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
+                    raise Exception(f"Game service error: {game_response['result']}")
+                
+                game_result = game_response['game_results']
+                player_i = next((i for i, step in enumerate(game_result) if step['player'] and step['id'] == message.from_user.id), -1)
+                if player_i == -1:
+                    raise Exception(f"Game service not have this player for game result")
+
+                result = self._generate_game_results(game_result, player_i, lang, names)
+                await message.answer(
+                    result,
+                    reply_markup=kb.main[lang]
+                    )
                 return True
             else:
-                if(len(steps) < game_response["players"]):
-                    result += f"\n {game_response["players"] - len(steps)} {phrases.dict('waitPlayers', lang)}"
                 await message.answer(result)
+                if(unstepped_players > 0):
+                    await message.answer(f"{unstepped_players} {phrases.dict('waitPlayers', lang)}")
                 return False
 
         except asyncio.TimeoutError:

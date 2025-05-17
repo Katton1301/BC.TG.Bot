@@ -1,0 +1,5 @@
+{
+  "Easy": ["Peanut", "Bubbles", "Jolly", "Snickers", "Pip", "Dizzy", "Muffin", "Tinker", "Nugget", "Pogo"],
+  "Medium": ["Blitz", "Rogue", "Vex", "Jinx", "Quirk", "Zesty", "Fable", "Riddle", "Swift", "Charm"],
+  "Hard": ["Vortex", "Cipher", "Nova", "Onyx", "Zenith", "Apex", "Neon", "Sphinx", "Quantum", "Titan"]
+}
