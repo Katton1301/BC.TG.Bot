@@ -32,7 +32,7 @@ class KafkaHandler:
             self.db_listen_topic,
             bootstrap_servers=self.bootstrap_servers,
             group_id='bot-group',
-            auto_offset_reset='earliest'
+            auto_offset_reset='latest'
         )
         await self.postgres_consumer.start()
         self.consumer_task.append(asyncio.create_task(self._consume_responses(self.postgres_consumer)))
@@ -40,7 +40,7 @@ class KafkaHandler:
             self.game_listen_topic,
             bootstrap_servers=self.bootstrap_servers,
             group_id='bot-group',
-            auto_offset_reset='earliest'
+            auto_offset_reset='latest'
         )
         await self.game_consumer.start()
         self.consumer_task.append(asyncio.create_task(self._consume_responses(self.game_consumer)))

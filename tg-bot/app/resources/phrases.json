@@ -32,7 +32,7 @@
         "steps": "Шагов",
         "draw": "Ничья!",
         "waitPlayers": "игроков еще не похадило.",
-        "gameResults": "Результаты игры.",
+        "gameResults": "Результаты игры:",
         "gaveUp": "Игрок Сдался!"
     },
     "en": {
@@ -67,7 +67,7 @@
         "steps": "Steps",
         "draw": "Draw!",
         "waitPlayers": "players have not joined yet.",
-        "gameResults": "Game results.",
+        "gameResults": "Game results:",
         "gaveUp": "Player gave up!"
     }
 }

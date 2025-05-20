@@ -19,7 +19,7 @@ var computerNames map[string][]string
 
 
 type PlayerData struct {
-  Id   int64  `json:"id"`
+  Id   int64  `json:"player_id"`
   FirstName string `json:"firstname"`
   LastName string `json:"lastname"`
   FullName string `json:"fullname"`
@@ -81,9 +81,11 @@ type IDResponse struct {
 }
 
 type RestoreGamesData struct {
-  CorrelationId string         `json:"correlation_id"`
-  Games         []GameData     `json:"games"`
-  PlayerGames   []PlayerGameData `json:"player_games"`
+    CorrelationId string             `json:"correlation_id"`
+    Games         []GameData         `json:"games"`
+    PlayerGames   []PlayerGameData   `json:"player_games"`
+    ComputerGames []ComputerGameData `json:"computer_games"`
+    History       []GamesHistoryData `json:"history"`
 }
 
 type KafkaMessage struct {
@@ -148,7 +150,11 @@ func main() {
  config := &kafka.ConfigMap{
   "bootstrap.servers": os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
   "group.id":          "go-kafka-group",
-  "auto.offset.reset": "earliest",
+    "auto.offset.reset":   "latest",
+    "enable.auto.commit":  "false",
+    "session.timeout.ms":  6000,  
+    "heartbeat.interval.ms": 2000,
+    "max.poll.interval.ms": 300000,
  }
 
  consumer, err := kafka.NewConsumer(config)
@@ -405,10 +411,7 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
     rand.Seed(time.Now().UnixNano())
 
     rand_i := rand.Intn(len(names))
-    log.Println(computer.GameBrain)
-    log.Println(len(names))
     computer.Name = names[rand_i]
-    log.Println(computer.Name)
 
     _, err = conn.Exec(context.Background(),
         `INSERT INTO computers(computer_id, player_id, server_id, game_id, game_brain, name) 
@@ -534,12 +537,13 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
     return nil
   }
 
-   func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64) error {
+func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64) error {
     games := make([]GameData, 0)
-    playerGames := make([]PlayerGameData, 0)
-
     rows, err := conn.Query(context.Background(),
-        `SELECT id, server_id, stage, step, secret_value FROM games WHERE server_id = $1`, server_id)
+        `SELECT id, server_id, stage, step, secret_value 
+         FROM games 
+         WHERE server_id = $1 AND stage != 'finished'`, 
+        server_id)
     if err != nil {
         return fmt.Errorf("failed to query games: %w", err)
     }
@@ -552,9 +556,14 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
         }
         games = append(games, game)
     }
-
+    
+    playerGames := make([]PlayerGameData, 0)
     rows, err = conn.Query(context.Background(),
-        `SELECT player_id, server_id, game_id, is_current_game, is_host FROM player_games WHERE server_id = $1`, server_id)
+        `SELECT player_id, server_id, game_id, is_current_game, is_host 
+         FROM player_games 
+         WHERE server_id = $1 AND game_id IN (
+             SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
+         )`, server_id)
     if err != nil {
         return fmt.Errorf("failed to query player_games: %w", err)
     }
@@ -568,17 +577,58 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
         playerGames = append(playerGames, pg)
     }
 
+    computerGames := make([]ComputerGameData, 0)
+    rows, err = conn.Query(context.Background(),
+        `SELECT computer_id, player_id, server_id, game_id, game_brain, name 
+         FROM computers 
+         WHERE server_id = $1 AND game_id IN (
+             SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
+         )`, server_id)
+    if err != nil {
+        return fmt.Errorf("failed to query computers: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var cg ComputerGameData
+        if err := rows.Scan(&cg.ComputerId, &cg.PlayerId, &cg.ServerId, &cg.GameId, &cg.GameBrain, &cg.Name); err != nil {
+            return fmt.Errorf("failed to scan computer row: %w", err)
+        }
+        computerGames = append(computerGames, cg)
+    }
+
+    history := make([]GamesHistoryData, 0)
+    rows, err = conn.Query(context.Background(),
+        `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer
+         FROM games_history
+         WHERE server_id = $1 AND game_id IN (
+             SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
+         )`, server_id)
+    if err != nil {
+        return fmt.Errorf("failed to query games history: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var h GamesHistoryData
+        if err := rows.Scan(&h.GameId, &h.PlayerId, &h.ServerId, &h.Step, &h.GameValue, &h.Bulls, &h.Cows, &h.IsComputer); err != nil {
+            return fmt.Errorf("failed to scan history row: %w", err)
+        }
+        history = append(history, h)
+    }
+
     response := RestoreGamesData{
         CorrelationId: correlation_id,
-        Games:       games,
-        PlayerGames: playerGames,
+        Games:         games,
+        PlayerGames:   playerGames,
+        ComputerGames: computerGames,
+        History:       history,
     }
 
     responseBytes, err := json.Marshal(response)
     if err != nil {
         return fmt.Errorf("failed to marshal response: %w", err)
     }
-
     producer_topic := "db_bot"
     err = producer.Produce(&kafka.Message{
         TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
@@ -589,7 +639,7 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
         return fmt.Errorf("failed to send response: %w", err)
     }
 
-    log.Printf("Sent server games data for server_id %d", server_id)
+    log.Printf("Sent server games data for server_id %d (with computers and history)", server_id)
     return nil
 }
 

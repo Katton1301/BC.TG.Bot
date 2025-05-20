@@ -50,12 +50,61 @@ class EventHandler:
                 "command": "get_server_games",
                 "data": SERVER_ID,
             }            
-            db_response = await self.kafka.request_to_db(server_data, timeout=5)
+            db_response = await self.kafka.request_to_db(server_data, timeout=10)
             if not db_response or 'games' not in db_response:
                 raise Exception("Invalid response from database: missing games")
+            if not db_response or 'player_games' not in db_response:
+                raise Exception("Invalid response from database: missing player games")
+            if not db_response or 'computer_games' not in db_response:
+                raise Exception("Invalid response from database: missing computer games")
+            if not db_response or 'history' not in db_response:
+                raise Exception("Invalid response from database: missing history")
             
+            games = []
             for game in db_response['games']:
-                await self._restore_game(game)
+                game_dict = {
+                    "command": 18,  # Assuming 18 is RESTORE_GAME command
+                    "server_id": SERVER_ID,
+                    "game_id": game['id'],
+                    "game_value": game['secret_value'],
+                    "restore_data": [],
+                }
+                games.append(game_dict)
+
+            logger.info(games)
+
+            for history in db_response['history']:
+                for game in games:
+                    if history['game_id'] == game['game_id']:
+                        game['restore_data'].append({
+                            "id": history['player_id'],
+                            "player": not history['is_computer'],
+                            "bulls": history['bulls'],
+                            "cows": history['cows'],
+                            "step": history['step'],
+                            "game_value": history['game_value'],
+                        })
+                        break
+            
+            for computer in db_response['computer_games']:
+                for game in games:
+                    if computer['game_id'] == game['game_id']:
+                        if 'brains' not in game:
+                            game['brains'] = []
+                        game['brains'].append({
+                            "id": computer['computer_id'],
+                            "player_id": computer['player_id'],
+                            "brain": computer['game_brain'],
+                        })
+            
+            for game in games:
+                logger.info(f"restore game {game['game_id']}")
+                game_response = await self.kafka.request_to_game(game, timeout=5)
+                if not game_response or 'result' not in game_response:
+                    raise Exception("Invalid start game response from game service")
+                
+                if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
+                    raise Exception(f"Game service error: {game_response['result']}")
 
         except asyncio.TimeoutError:
             logger.error(f"Timeout during init game server")
@@ -147,12 +196,6 @@ class EventHandler:
             logger.exception(f"Failed to create game for user {player_id}")
 
         return 0
-
-
-    async def _restore_game(self, game: Dict[str, Any]):
-        logger.info(f"restore game {game['id']}")
-        #ToDo : implement game restore logic
-        pass
 
     async def _start_game(self, game_id, player_id) -> None:
         try:
@@ -250,7 +293,7 @@ class EventHandler:
             result += f"{phrases.dict("youWon", lang)}\n"
         if len(game_results) > 1:
             sorted_results = sorted(game_results, key=lambda x: x['place'])
-            result += f"{phrases.dict('gameResults', lang)}\n"
+            result += f"\n{phrases.dict('gameResults', lang)}\n"
             for i in range(len(sorted_results)):
                 name = next((d['name'] for d in names if d['id'] == sorted_results[i]['id'] and d['is_player'] == sorted_results[i]['player']), "Unknown")
                 if i == player_i:
@@ -382,10 +425,6 @@ class EventHandler:
                 if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                     raise Exception(f"Game service error: {game_response['result']}")
                 
-                steps = game_response['steps']
-                for i in range(len(steps)):
-                    result += f"\n{steps[0]["step"]} {game_value}: {steps[0]["bulls"]}{phrases.dict("bulls", lang)} {steps[0]["cows"]}{phrases.dict("cows", lang)}"
-
             if game_response['game_stage'] == 'FINISHED':
                 await message.answer(result)
                 
