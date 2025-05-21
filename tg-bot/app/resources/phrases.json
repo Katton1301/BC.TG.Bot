@@ -1,10 +1,11 @@
 {
     "ru": {
         "greeting": "Привет! Я бот 'Быки и Коровы'. Вот, что я умею!",
+        "menu": "Меню",
         "help": "Я бот 'Быки и Коровы'. Я могу сыграть с тобой или ты можешь сыграть против случайных игроков. Так же ты можешь сыграть с друзьями через лобби. Так же могу расказать правила иргы.",
         "game": "Играть",
         "rules": "Правила",
-        "fullRules": "Правила игры 'Быки и Коровы'...",
+        "fullRules": "Правила игры 'Быки и Коровы': Загадывается число из 4 неповторяющихся цифр. Игрок пытвется угадать. Если цифра есть и стоит на месте - это 'бык'. Если цифра есть, но не на своем месте - 'корова'. Например, загадано 1234, а назвали 1359 - один бык (1) и одна корова (3). Цель - угадать число за минимум попыток. Все просто: называешь варианты, получаешь подсказки, анализируешь и побеждаешь. Главное - логика и внимание. Играй, считай, выигрывай!",
         "lang": "Сменить язык",
         "feedback": "Обратная связь",
         "chooseGameMode": "Выберите режим игры",
@@ -33,13 +34,17 @@
         "draw": "Ничья!",
         "waitPlayers": "игроков еще не похадило.",
         "gameResults": "Результаты игры:",
-        "gaveUp": "Игрок Сдался!"
+        "gaveUp": "Игрок Сдался!",
+        "back": "Назад",
+        "waitingForOpponent": "Ожидаем оппонента..."
     },
     "en": {
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
+        "menu": "Menu",
         "help": "I am a bot 'Bulls and Cows'. I can play with you or you can play against random players. You can also play with friends through the lobby. I can also tell you the rules of the game.",
         "game": "Play",
         "rules": "Rules",
+        "fullRules": "Rules of the game 'Bulls and Cows': A number of 4 unique digits is guessed. The player tries to guess. If the digit is there and in place, it is a 'bull'. If the digit is there but out of place, it is a 'cow'. For example, 1234 is guessed, but 1359 is named - one bull (1) and one cow (3). The goal is to guess the number in a minimum of attempts. Everything is simple: you name the options, get hints, analyze and win. The main thing is logic and attention. Play, count, win!",
         "lang": "Change language",
         "feedback": "feedback",
         "chooseGameMode": "Choose game mode",
@@ -68,6 +73,8 @@
         "draw": "Draw!",
         "waitPlayers": "players have not joined yet.",
         "gameResults": "Game results:",
-        "gaveUp": "Player gave up!"
+        "gaveUp": "Player gave up!",
+        "back": "Back",
+        "waitingForOpponent": "Waiting for the opponent..."
     }
 }

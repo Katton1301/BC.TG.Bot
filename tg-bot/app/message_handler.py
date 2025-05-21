@@ -8,7 +8,10 @@ from phrases import phrases
 router = Router()
 
 class PlayerStates(StatesGroup):
+    free_state = State()
+    choose_game = State()
     choose_bot_difficulty = State()
+    waiting_a_rival = State()
     waiting_for_number = State()
 
 def setup_event_handler(eh):
@@ -16,20 +19,23 @@ def setup_event_handler(eh):
     router.message.register(help_command, Command('help'))
     router.message.register(rules_command, F.text.contains('правила') | F.text.contains('rules'))
     router.message.register(game_command, lambda msg: phrases.checkPhrase("game", str(msg.text)))
-    router.message.register(single_play_command, lambda msg: phrases.checkPhrase("singlePlay", str(msg.text)))
+    router.message.register(play_command, PlayerStates.choose_game)
     router.message.register(handle_number_input, PlayerStates.waiting_for_number)
-    
+    router.message.register(back_command, lambda msg: phrases.checkPhrase("back", str(msg.text)))
+
     router.ee = eh
 
 @router.message(CommandStart())
-async def start_command(message: types.Message):
+async def start_command(message: types.Message, state: FSMContext):
+    await state.set_state(PlayerStates.free_state)
     eh = router.ee
     lang = message.from_user.language_code
     await eh.change_player(message)
     await message.answer(phrases.dict("greeting", lang), reply_markup=kb.main[lang])
 
 @router.message(Command('help'))
-async def help_command(message: types.Message):
+async def help_command(message: types.Message, state: FSMContext):
+    await state.set_state(PlayerStates.free_state)
     lang = message.from_user.language_code
     await message.answer(
         phrases.dict("help",lang),
@@ -37,34 +43,37 @@ async def help_command(message: types.Message):
 
 
 @router.message(F.text.contains('правила') or F.text.contains('rules'))
-async def rules_command(message: types.Message):
+async def rules_command(message: types.Message, state: FSMContext):
+    await state.set_state(PlayerStates.free_state)
     lang = message.from_user.language_code
     await message.answer(
         phrases.dict("fullRules",lang),
         reply_markup=kb.main[lang])
 
 @router.message(lambda msg: phrases.checkPhrase("game", str(msg.text)))
-async def game_command(message: types.Message):
+async def game_command(message: types.Message, state: FSMContext):
+    await state.set_state(PlayerStates.choose_game)
     lang = message.from_user.language_code
     await message.answer(
         phrases.dict("chooseGameMode", lang),
         reply_markup=kb.game[lang])
-    
-@router.message(lambda msg: phrases.checkPhrase("singlePlay", str(msg.text)))
-async def single_play_command(message: types.Message, state: FSMContext):
-    eh = router.ee
-    ok = await eh.start_single_game(message)
-    if ok:
-        await state.set_state(PlayerStates.waiting_for_number)
-    
-@router.message(lambda msg: phrases.checkPhrase("botPlay", str(msg.text)))
-async def single_play_command(message: types.Message, state: FSMContext):
-    await state.set_state(PlayerStates.choose_bot_difficulty)
-    lang = message.from_user.language_code
-    await message.answer(
-        phrases.dict("chooseBotDifficulty",lang),
-        reply_markup=kb.bot[lang])
 
+@router.message(PlayerStates.choose_game)
+async def play_command(message: types.Message, state: FSMContext):
+    eh = router.ee
+    if phrases.checkPhrase("singlePlay", str(message.text)):
+        ok = await eh.start_single_game(message)
+        if ok:
+            await state.set_state(PlayerStates.waiting_for_number)
+    elif phrases.checkPhrase("botPlay", str(message.text)):
+        await state.set_state(PlayerStates.choose_bot_difficulty)
+        lang = message.from_user.language_code
+        await message.answer(
+            phrases.dict("chooseBotDifficulty",lang),
+            reply_markup=kb.bot[lang])
+    elif phrases.checkPhrase("randomPlay", str(message.text)):
+        await state.set_state(PlayerStates.waiting_a_rival)
+        await eh.start_random_game(message, state)
 
 @router.message(PlayerStates.choose_bot_difficulty)
 async def handle_number_input(message: types.Message, state: FSMContext):
@@ -78,4 +87,16 @@ async def handle_number_input(message: types.Message, state: FSMContext):
     eh = router.ee
     finish = await eh.do_step(message)
     if finish:
-        await state.clear()
+        await state.set_state(PlayerStates.free_state)
+
+@router.message(lambda msg: phrases.checkPhrase("back", str(msg.text)))
+async def back_command(message: types.Message, state: FSMContext):
+    lang = message.from_user.language_code
+    if state.get_state() == PlayerStates.choose_bot_difficulty:
+        await state.set_state(PlayerStates.choose_game)
+        await message.answer(
+            phrases.dict("chooseGameMode", lang),
+            reply_markup=kb.game[lang])
+    elif state.get_state() == PlayerStates.choose_game:
+        await state.set_state(PlayerStates.free_state)
+        await message.answer(phrases.dict("menu", lang), reply_markup=kb.main[lang])

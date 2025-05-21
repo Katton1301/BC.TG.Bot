@@ -22,6 +22,7 @@ for lang in phrases.langs():
             [KeyboardButton(text=phrases.dict('singlePlay', lang)), KeyboardButton(text=phrases.dict('botPlay', lang))],
             [KeyboardButton(text=phrases.dict('randomPlay', lang))],
             [KeyboardButton(text=phrases.dict('createLobby', lang)), KeyboardButton(text=phrases.dict('enterLobby', lang))],
+            [KeyboardButton(text=phrases.dict('back', lang))],
         ],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -31,6 +32,7 @@ for lang in phrases.langs():
             [KeyboardButton(text=phrases.dict('easy', lang))],
             [KeyboardButton(text=phrases.dict('medium', lang))],
             [KeyboardButton(text=phrases.dict('hard', lang))],
+            [KeyboardButton(text=phrases.dict('back', lang))],
         ],
         resize_keyboard=True,
         one_time_keyboard=True
