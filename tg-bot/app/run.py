@@ -8,17 +8,15 @@ import os
 
 async def main():
 
-    eh = EventHandler()
     bot = Bot(token=os.environ["TG_API_BC_TOKEN"])
+    eh = EventHandler(bot)
     await eh.start()
 
     await eh.initGameServer()
-    
     dp = Dispatcher()
 
     setup_event_handler(eh)
     dp.include_router(router)
-    
     try:
         await dp.start_polling(bot)
     finally:

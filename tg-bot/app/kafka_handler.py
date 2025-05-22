@@ -77,7 +77,6 @@ class KafkaHandler:
             logger.error(f"Consumer error: {e}")
 
     async def send_to_bd(self, message: Dict[str, Any]) -> str:
-        logger.info(f"send to bd : {message}")
         await self.send(message, self.db_send_topic)
 
     async def send_to_game(self, message: Dict[str, Any]) -> str:

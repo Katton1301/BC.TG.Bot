@@ -13,10 +13,7 @@ import (
   "github.com/jackc/pgx/v5"
 )
 
-
 var computerNames map[string][]string
-
-
 
 type PlayerData struct {
   Id   int64  `json:"player_id"`
@@ -25,14 +22,16 @@ type PlayerData struct {
   FullName string `json:"fullname"`
   UserName string `json:"username"`
   Lang string `json:"lang"`
+  State string `json:"state"`
 }
 
 type GameData struct {
-  Id   int64  `json:"id"`
-  ServerId int64 `json:"server_id"`
-  Stage  string `json:"stage"`
-  Step  int `json:"step"`
-  SecretValue int `json:"secret_value"`
+  Id          int64  `json:"id"`
+  ServerId    int64  `json:"server_id"`
+  Mode        string `json:"mode"`
+  Stage       string `json:"stage"`
+  Step        int    `json:"step"`
+  SecretValue int    `json:"secret_value"`
 }
 
 type PlayerGameData struct {
@@ -83,6 +82,7 @@ type IDResponse struct {
 type RestoreGamesData struct {
     CorrelationId string             `json:"correlation_id"`
     Games         []GameData         `json:"games"`
+    Players       []PlayerData       `json:"players"`
     PlayerGames   []PlayerGameData   `json:"player_games"`
     ComputerGames []ComputerGameData `json:"computer_games"`
     History       []GamesHistoryData `json:"history"`
@@ -152,7 +152,7 @@ func main() {
   "group.id":          "go-kafka-group",
     "auto.offset.reset":   "latest",
     "enable.auto.commit":  "false",
-    "session.timeout.ms":  6000,  
+    "session.timeout.ms":  6000,
     "heartbeat.interval.ms": 2000,
     "max.poll.interval.ms": 300000,
  }
@@ -307,67 +307,68 @@ func main() {
 
 func handleInsertPlayer(conn *pgx.Conn, player PlayerData) error {
  _, err := conn.Exec(context.Background(),
-  `INSERT INTO players(id, firstname, lastname, fullname, username, lang) 
-  VALUES($1, $2, $3, $4, $5, $6)
+  `INSERT INTO players(id, firstname, lastname, fullname, username, lang, state)
+  VALUES($1, $2, $3, $4, $5, $6, $7)
   ON CONFLICT (id) DO UPDATE SET
    firstname = EXCLUDED.firstname,
    lastname = EXCLUDED.lastname,
    fullname = EXCLUDED.fullname,
    username = EXCLUDED.username,
-   lang = EXCLUDED.lang`,
-  player.Id, player.FirstName, player.LastName, player.FullName, player.UserName, player.Lang)
+   lang = EXCLUDED.lang,
+   state = EXCLUDED.state`,
+  player.Id, player.FirstName, player.LastName, player.FullName, player.UserName, player.Lang, player.State)
 
   if err != nil {
     return fmt.Errorf("failed to upsert player: %w", err)
   }
-  
+
    log.Printf("Upserted player with id %d", player.Id)
    return nil
 }
-  
+
 func handleCreateGame(conn *pgx.Conn, correlation_id string, game GameData) error {
    var newID int64
-   
+
    err := conn.QueryRow(context.Background(), "SELECT nextval('games_id_seq')").Scan(&newID)
    if err != nil {
     return fmt.Errorf("failed to generate new ID: %w", err)
    }
-  
+
    _, err = conn.Exec(context.Background(),
-    `INSERT INTO games(id, server_id, stage, step, secret_value) 
-    VALUES($1, $2, $3, $4, $5)`,
-    newID, game.ServerId, game.Stage, game.Step, game.SecretValue)
-  
+    `INSERT INTO games(id, server_id, mode, stage, step, secret_value)
+    VALUES($1, $2, $3, $4, $5, $6)`,
+    newID, game.ServerId, game.Mode, game.Stage, game.Step, game.SecretValue)
+
    if err != nil {
     return fmt.Errorf("failed to insert game: %w", err)
    }
-  
+
    log.Printf("Inserted game with id %d", newID)
-  
+
    response := IDResponse{
     CorrelationId: correlation_id,
     Table:    "games",
     ID:    newID,
    }
-  
+
    responseBytes, err := json.Marshal(response)
    if err != nil {
     return fmt.Errorf("failed to marshal ID response: %w", err)
    }
-  
+
    producer_topic := "db_bot"
    err = producer.Produce(&kafka.Message{
     TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
     Value:          responseBytes,
    }, nil)
-  
+
    if err != nil {
     return fmt.Errorf("failed to send ID response: %w", err)
    }
-  
+
    return nil
 }
-  
+
 func handleUpdateGame(conn *pgx.Conn, game GameData) error {
   var err error
   if game.SecretValue == 0 {
@@ -398,7 +399,7 @@ func handleUpdateGame(conn *pgx.Conn, game GameData) error {
 
 func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer ComputerGameData) error {
     var newID int64
-    
+
     err := conn.QueryRow(context.Background(), "SELECT nextval('computers_id_seq')").Scan(&newID)
     if err != nil {
         return fmt.Errorf("failed to generate new ID: %w", err)
@@ -414,10 +415,10 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
     computer.Name = names[rand_i]
 
     _, err = conn.Exec(context.Background(),
-        `INSERT INTO computers(computer_id, player_id, server_id, game_id, game_brain, name) 
+        `INSERT INTO computers(computer_id, player_id, server_id, game_id, game_brain, name)
         VALUES($1, $2, $3, $4, $5, $6)`,
         newID, computer.PlayerId, computer.ServerId, computer.GameId, computer.GameBrain, computer.Name)
-    
+
     if err != nil {
         return fmt.Errorf("failed to insert computer: %w", err)
     }
@@ -450,26 +451,26 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
 
 func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
   _, err := conn.Exec(context.Background(),
-    `INSERT INTO player_games(player_id, server_id, game_id, is_current_game, is_host) 
+    `INSERT INTO player_games(player_id, server_id, game_id, is_current_game, is_host)
     VALUES($1, $2, $3, $4, $5)`,
     playerGame.PlayerId, playerGame.ServerId, playerGame.GameId, playerGame.IsCurrentGame, playerGame.IsHost)
-  
+
   if err != nil {
     return fmt.Errorf("failed to insert player game: %w", err)
   }
-  
+
   log.Printf("Inserted player game")
   return nil
 }
 
    func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64) error {
     var gameID int64
-    
+
     err := conn.QueryRow(context.Background(),
-        `SELECT game_id FROM player_games 
+        `SELECT game_id FROM player_games
          WHERE player_id = $1 AND is_current_game = true`,
         player_id).Scan(&gameID)
-    
+
     if err != nil {
         if err == pgx.ErrNoRows {
             gameID = 0
@@ -511,8 +512,8 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
     defer tx.Rollback(context.Background())
 
     _, err = tx.Exec(context.Background(),
-        `UPDATE player_games 
-         SET is_current_game = false 
+        `UPDATE player_games
+         SET is_current_game = false
          WHERE player_id = $1`,
         playerGame.PlayerId)
     if err != nil {
@@ -520,7 +521,7 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
     }
 
     _, err = tx.Exec(context.Background(),
-        `UPDATE player_games 
+        `UPDATE player_games
          SET is_current_game = $1
          WHERE player_id = $2 AND game_id = $3`,
         playerGame.IsCurrentGame, playerGame.PlayerId, playerGame.GameId)
@@ -532,7 +533,7 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
         return fmt.Errorf("failed to commit transaction: %w", err)
     }
 
-    log.Printf("Set current game for player %d to game %d (is_current=%v)", 
+    log.Printf("Set current game for player %d to game %d (is_current=%v)",
         playerGame.PlayerId, playerGame.GameId, playerGame.IsCurrentGame)
     return nil
   }
@@ -540,9 +541,9 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
 func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64) error {
     games := make([]GameData, 0)
     rows, err := conn.Query(context.Background(),
-        `SELECT id, server_id, stage, step, secret_value 
-         FROM games 
-         WHERE server_id = $1 AND stage != 'finished'`, 
+        `SELECT id, server_id, mode, stage, step, secret_value
+         FROM games
+         WHERE server_id = $1 AND stage != 'finished'`,
         server_id)
     if err != nil {
         return fmt.Errorf("failed to query games: %w", err)
@@ -551,16 +552,34 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
 
     for rows.Next() {
         var game GameData
-        if err := rows.Scan(&game.Id, &game.ServerId, &game.Stage, &game.Step, &game.SecretValue); err != nil {
+        if err := rows.Scan(&game.Id, &game.ServerId, &game.Mode, &game.Stage, &game.Step, &game.SecretValue); err != nil {
             return fmt.Errorf("failed to scan game row: %w", err)
         }
         games = append(games, game)
     }
-    
+
+    players := make([]PlayerData, 0)
+    rows, err = conn.Query(context.Background(),
+        `SELECT id, firstname, lastname, fullname, username, lang, state
+         FROM players`)
+    if err != nil {
+        return fmt.Errorf("failed to query players: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var pg PlayerData
+        if err := rows.Scan(&pg.Id, &pg.FirstName, &pg.LastName, &pg.FullName, &pg.UserName, &pg.Lang, &pg.State); err != nil {
+            return fmt.Errorf("failed to scan players row: %w", err)
+        }
+        players = append(players, pg)
+    }
+
+
     playerGames := make([]PlayerGameData, 0)
     rows, err = conn.Query(context.Background(),
-        `SELECT player_id, server_id, game_id, is_current_game, is_host 
-         FROM player_games 
+        `SELECT player_id, server_id, game_id, is_current_game, is_host
+         FROM player_games
          WHERE server_id = $1 AND game_id IN (
              SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
          )`, server_id)
@@ -579,8 +598,8 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
 
     computerGames := make([]ComputerGameData, 0)
     rows, err = conn.Query(context.Background(),
-        `SELECT computer_id, player_id, server_id, game_id, game_brain, name 
-         FROM computers 
+        `SELECT computer_id, player_id, server_id, game_id, game_brain, name
+         FROM computers
          WHERE server_id = $1 AND game_id IN (
              SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
          )`, server_id)
@@ -620,6 +639,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
     response := RestoreGamesData{
         CorrelationId: correlation_id,
         Games:         games,
+        Players:       players,
         PlayerGames:   playerGames,
         ComputerGames: computerGames,
         History:       history,
@@ -647,7 +667,7 @@ func handleGetGameNames(conn *pgx.Conn, correlationId string, gameId int64) erro
     var names []GameNameData
 
     rows, err := conn.Query(context.Background(),
-        `SELECT p.id, p.username 
+        `SELECT p.id, p.username
          FROM players p
          JOIN player_games pg ON p.id = pg.player_id
          WHERE pg.game_id = $1`, gameId)
@@ -670,8 +690,8 @@ func handleGetGameNames(conn *pgx.Conn, correlationId string, gameId int64) erro
     }
 
     rows, err = conn.Query(context.Background(),
-        `SELECT computer_id, name 
-         FROM computers 
+        `SELECT computer_id, name
+         FROM computers
          WHERE game_id = $1`, gameId)
     if err != nil {
         return fmt.Errorf("failed to query computers: %w", err)
@@ -722,7 +742,7 @@ func checkAndCreateTables(conn *pgx.Conn) error {
    if err != nil {
     return err
   }
-  
+
   if !playersTableExists {
     _, err := conn.Exec(context.Background(),
      `CREATE TABLE players (
@@ -731,14 +751,15 @@ func checkAndCreateTables(conn *pgx.Conn) error {
       lastname TEXT,
       fullname TEXT,
       username TEXT,
-      lang TEXT
+      lang TEXT,
+      state TEXT
      )`)
     if err != nil {
      return err
     }
     log.Println("Table 'players' created successfully")
   }
-  
+
   var gamesTableExists bool
   err = conn.QueryRow(context.Background(),
     "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'games')").Scan(&gamesTableExists)
@@ -750,6 +771,7 @@ func checkAndCreateTables(conn *pgx.Conn) error {
     _, err := conn.Exec(context.Background(),
     `CREATE TABLE games (
     id BIGINT PRIMARY KEY,
+    mode TEXT,
     server_id BIGINT,
     stage TEXT,
     step INTEGER,
@@ -768,7 +790,7 @@ func checkAndCreateTables(conn *pgx.Conn) error {
   if err != nil {
     return err
   }
-  
+
   if !playerGamesTableExists {
      _, err := conn.Exec(context.Background(),
       `CREATE TABLE player_games (
@@ -814,7 +836,7 @@ func checkAndCreateTables(conn *pgx.Conn) error {
   if err != nil {
   return err
   }
-  
+
   if !gamesHistoryTableExists {
     _, err := conn.Exec(context.Background(),
      `CREATE TABLE games_history (
@@ -838,14 +860,14 @@ func checkAndCreateTables(conn *pgx.Conn) error {
 
 func handleInsertStep(conn *pgx.Conn, step GamesHistoryData) error {
   _, err := conn.Exec(context.Background(),
-   `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer) 
+   `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer)
    VALUES($1, $2, $3, $4, $5, $6, $7, $8)`,
    step.GameId, step.PlayerId, step.ServerId, step.Step, step.GameValue, step.Bulls, step.Cows, step.IsComputer)
- 
+
    if err != nil {
      return fmt.Errorf("failed to insert step: %w", err)
    }
-   
+
     log.Printf("Inserted step with game id %d", step.GameId)
     return nil
 }
