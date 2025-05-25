@@ -4,6 +4,7 @@ from message_handler import router, setup_event_handler
 import asyncio
 from event_handler import EventHandler
 from aiogram import Bot
+from middleware import StateRestoreMiddleware
 import os
 
 async def main():
@@ -14,6 +15,8 @@ async def main():
 
     await eh.initGameServer()
     dp = Dispatcher()
+    state_middleware = StateRestoreMiddleware(eh)
+    dp.update.outer_middleware(state_middleware)
 
     setup_event_handler(eh)
     dp.include_router(router)

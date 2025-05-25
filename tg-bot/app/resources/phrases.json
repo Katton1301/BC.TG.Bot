@@ -36,7 +36,8 @@
         "gameResults": "Результаты игры:",
         "gaveUp": "Игрок Сдался!",
         "back": "Назад",
-        "waitingForOpponent": "Ожидаем оппонента..."
+        "waitingForOpponent": "Ожидаем оппонента...",
+        "warningDigit": "Сначала, выбирите режим игры и войдите в неё!"
     },
     "en": {
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
@@ -75,6 +76,7 @@
         "gameResults": "Game results:",
         "gaveUp": "Player gave up!",
         "back": "Back",
-        "waitingForOpponent": "Waiting for the opponent..."
+        "waitingForOpponent": "Waiting for the opponent...",
+        "warningDigit": "First, choose the game mode and enter it!"
     }
 }
