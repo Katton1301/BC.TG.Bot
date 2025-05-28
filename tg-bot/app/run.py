@@ -4,21 +4,18 @@ from message_handler import router, setup_event_handler
 import asyncio
 from event_handler import EventHandler
 from aiogram import Bot
-from middleware import StateRestoreMiddleware
 import os
 
 async def main():
 
     bot = Bot(token=os.environ["TG_API_BC_TOKEN"])
-    eh = EventHandler(bot)
-    await eh.start()
-
-    await eh.initGameServer()
     dp = Dispatcher()
-    state_middleware = StateRestoreMiddleware(eh)
-    dp.update.outer_middleware(state_middleware)
+    eh = EventHandler(bot, dp)
+    await eh.start()
+    
+    await eh.initGameServer()
 
-    setup_event_handler(eh)
+    await setup_event_handler(eh)
     dp.include_router(router)
     try:
         await dp.start_polling(bot)

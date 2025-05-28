@@ -543,7 +543,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
     rows, err := conn.Query(context.Background(),
         `SELECT id, server_id, mode, stage, step, secret_value
          FROM games
-         WHERE server_id = $1 AND stage != 'finished'`,
+         WHERE server_id = $1 AND stage != 'FINISHED'`,
         server_id)
     if err != nil {
         return fmt.Errorf("failed to query games: %w", err)
@@ -581,7 +581,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
         `SELECT player_id, server_id, game_id, is_current_game, is_host
          FROM player_games
          WHERE server_id = $1 AND game_id IN (
-             SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
+             SELECT id FROM games WHERE server_id = $1 AND stage != 'FINISHED'
          )`, server_id)
     if err != nil {
         return fmt.Errorf("failed to query player_games: %w", err)
@@ -601,7 +601,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
         `SELECT computer_id, player_id, server_id, game_id, game_brain, name
          FROM computers
          WHERE server_id = $1 AND game_id IN (
-             SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
+             SELECT id FROM games WHERE server_id = $1 AND stage != 'FINISHED'
          )`, server_id)
     if err != nil {
         return fmt.Errorf("failed to query computers: %w", err)
@@ -621,7 +621,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
         `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer
          FROM games_history
          WHERE server_id = $1 AND game_id IN (
-             SELECT id FROM games WHERE server_id = $1 AND stage != 'finished'
+             SELECT id FROM games WHERE server_id = $1 AND stage != 'FINISHED'
          )`, server_id)
     if err != nil {
         return fmt.Errorf("failed to query games history: %w", err)

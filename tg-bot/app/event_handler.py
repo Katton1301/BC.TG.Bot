@@ -8,7 +8,10 @@ from phrases import phrases
 import keyboards as kb
 from aiogram.fsm.state import State
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
 from message_handler import PlayerStates
+from aiogram import Dispatcher
+from aiogram import Bot
 
 # Settings
 SERVER_ID = 1
@@ -17,11 +20,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 class EventHandler:
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot, dp):
+        self.bot: Bot = bot
+        self.dp: Dispatcher = dp
         self.event_queue = asyncio.Queue()
         self.running = False
-        self.players_state = dict()
         kafka_bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
         kafka_config = {
             "db_listen_topic": os.environ['TOPIC_DB_LISTEN'],
@@ -77,27 +80,28 @@ class EventHandler:
                     "game_id": game['id'],
                     "game_value": game['secret_value'],
                     "restore_data": [],
+                    "players": dict(),
                 }
                 games.append(game_dict)
 
-            self.players_state = dict()
             for player in db_response['players']:
-                self.players_state[player['player_id']] = player['state']
-                if self.players_state == "PlayerStates:waiting_a_rival":
+                user_id = player['player_id']
+                state_name = player['state']
+                storage_key = StorageKey(chat_id=user_id, user_id=user_id, bot_id=self.bot.id)
+                state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
+                await state.set_state(state_name)
+                
+                if await state.get_state() == PlayerStates.waiting_a_rival:
                     self.waiting_player = player
+                logging.info(f"restore user - {user_id} state - {await state.get_state()}")
 
-            for history in db_response['history']:
-                for game in games:
-                    if history['game_id'] == game['game_id']:
-                        game['restore_data'].append({
-                            "id": history['player_id'],
-                            "player": not history['is_computer'],
-                            "bulls": history['bulls'],
-                            "cows": history['cows'],
-                            "step": history['step'],
-                            "game_value": history['game_value'],
-                        })
-                        break
+            for player_game in db_response['player_games']:
+                if player_game["is_current_game"]:
+                    for game in games:
+                        if player_game['game_id'] == game['game_id']:
+                            game['players'][player_game['player_id']] = player_game['is_host']
+                            break
+
 
             for computer in db_response['computer_games']:
                 for game in games:
@@ -127,7 +131,6 @@ class EventHandler:
 
     async def change_player(self, message: Any, state: FSMContext, new_state: State):
         await state.set_state(new_state)
-        self.players_state[message.from_user.id] = await state.get_state()
         player = {
             "player_id": message.from_user.id,
             "firstname": message.from_user.first_name,
@@ -135,7 +138,7 @@ class EventHandler:
             "fullname": message.from_user.full_name,
             "username": message.from_user.username,
             "lang": message.from_user.language_code,
-            "state": self.players_state[message.from_user.id]
+            "state": await state.get_state()
         }
         await self.update_player(player)
 
@@ -219,6 +222,21 @@ class EventHandler:
 
     async def _add_player_to_game(self, game_id, player_id) -> bool:
         try:
+            player_msg = {
+                "command": "add_player_game",
+                "data": {
+                    "player_id": player_id,
+                    "server_id": SERVER_ID,
+                    "game_id": game_id,
+                    "is_current_game": False,
+                    "is_host": False,
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            await self.kafka.send_to_bd(player_msg)
+            logger.info(f"Player {player_id} added to game {game_id}")
+
             set_current_game = {
                 "command": "set_current_game",
                 "data": {
@@ -226,7 +244,7 @@ class EventHandler:
                     "server_id": SERVER_ID,
                     "game_id": game_id,
                     "is_current_game": True,
-                    "is_host": True,
+                    "is_host": False,
                 },
                 "timestamp": str(datetime.now())
             }
@@ -356,7 +374,7 @@ class EventHandler:
             logger.exception(f"Failed to create game for user {player_id}")
             return False
 
-    async def start_single_game(self, message: types.Message):
+    async def start_single_game(self, message: types.Message, state: FSMContext):
         game_id = await self._create_game(message.from_user.id, "single")
         if game_id == 0:
             await message.answer("Failed to create game")
@@ -366,6 +384,7 @@ class EventHandler:
         if ok:
             lang = message.from_user.language_code
             await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}")
+            await self.change_player(message, state, PlayerStates.waiting_for_number)
         else:
             await message.answer("Failed to start game")
         return ok
@@ -383,7 +402,7 @@ class EventHandler:
         }
         if self.waiting_player is None:
             lang = message.from_user.language_code
-            await self.update_player(message, state, PlayerStates.waiting_a_rival)
+            await self.change_player(message, state, PlayerStates.waiting_a_rival)
             player['state'] = await state.get_state()
             self.waiting_player = player
             await message.answer(f"{phrases.dict('waitingForOpponent', lang)}")
@@ -404,9 +423,13 @@ class EventHandler:
             ok = await self._start_game(game_id, player1['player_id'])
             if ok:
                 for player in [player1, player2]:
-                    self.players_state[player['player_id']] = str(PlayerStates.waiting_for_number)
-                    player['state'] = self.players_state[player['player_id']]
+                    
+                    storage_key = StorageKey(chat_id=player['player_id'], user_id=player['player_id'], bot_id=self.bot.id)
+                    state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
+                    await state.set_state(PlayerStates.waiting_for_number)
+                    player['state'] = await state.get_state()
                     await self.update_player(player)
+                    
                     lang = player['lang']
                     await self.bot.send_message(
                         chat_id=player['player_id'],
@@ -423,7 +446,7 @@ class EventHandler:
                     text=e
                 )
 
-    def _generateStepsResult(self, steps, player_i, lang, names):
+    def _generate_steps_result(self, steps, player_i, lang, names):
         result = ""
         game_value = steps[player_i]["game_value"]
         result += f"{phrases.dict('step', lang)} {steps[player_i]["step"]}"
@@ -466,7 +489,7 @@ class EventHandler:
                     result += f"\n"
         return result
 
-    async def do_step( self, message: types.Message ):
+    async def do_step( self, message: types.Message, state: FSMContext ):
         try:
             if not message.text.isdigit():
                 raise Exception(phrases.dict("invalidNumberFormat", message.from_user.language_code))
@@ -566,7 +589,7 @@ class EventHandler:
                 if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
                     unfinished_players += 1
 
-            result = self._generateStepsResult(steps, player_i, lang, names)
+            result = self._generate_steps_result(steps, player_i, lang, names)
 
             if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
                 game_msg = {
@@ -609,6 +632,7 @@ class EventHandler:
                     result,
                     reply_markup=kb.main[lang]
                     )
+                await self.change_player(message, state, PlayerStates.free_state)
                 return True
             else:
                 await message.answer(result)
@@ -627,7 +651,7 @@ class EventHandler:
             await message.answer(str(e))
             return False
 
-    async def start_bot_play( self, message: types.Message ):
+    async def start_bot_play( self, message: types.Message, state: FSMContext ):
         player_id = message.from_user.id
         game_id = await self._create_game(player_id, "versus_bot")
         if game_id == 0:
@@ -652,6 +676,7 @@ class EventHandler:
             if ok:
                 lang = message.from_user.language_code
                 await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}")
+                await self.change_player(message, state, PlayerStates.waiting_for_number)
             else:
                 await message.answer("Failed to start game")
             return ok
