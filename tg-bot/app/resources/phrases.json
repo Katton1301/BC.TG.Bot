@@ -37,7 +37,8 @@
         "gaveUp": "Игрок Сдался!",
         "back": "Назад",
         "waitingForOpponent": "Ожидаем оппонента...",
-        "warningDigit": "Сначала, выбирите режим игры и войдите в неё!"
+        "warningDigit": "Сначала, выбирите режим игры и войдите в неё!",
+        "makeStep": "cделал ход"
     },
     "en": {
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
@@ -77,6 +78,7 @@
         "gaveUp": "Player gave up!",
         "back": "Back",
         "waitingForOpponent": "Waiting for the opponent...",
-        "warningDigit": "First, choose the game mode and enter it!"
+        "warningDigit": "First, choose the game mode and enter it!",
+        "makeStep": "make step"
     }
 }

@@ -80,7 +80,7 @@ class EventHandler:
                     "game_id": game['id'],
                     "game_value": game['secret_value'],
                     "restore_data": [],
-                    "players": dict(),
+                    "players": [],
                 }
                 games.append(game_dict)
 
@@ -99,9 +99,24 @@ class EventHandler:
                 if player_game["is_current_game"]:
                     for game in games:
                         if player_game['game_id'] == game['game_id']:
-                            game['players'][player_game['player_id']] = player_game['is_host']
+                            game['players'].append( { 
+                                "id": player_game['player_id'],
+                                "is_host": player_game['is_host'],
+                            } )
                             break
-
+            
+            for history in db_response['history']:
+                for game in games:
+                    if history['game_id'] == game['game_id']:
+                        game['restore_data'].append({
+                            "id": history['player_id'],
+                            "player": not history['is_computer'],
+                            "bulls": history['bulls'],
+                            "cows": history['cows'],
+                            "step": history['step'],
+                            "game_value": history['game_value'],
+                        })
+                        break
 
             for computer in db_response['computer_games']:
                 for game in games:
@@ -446,6 +461,13 @@ class EventHandler:
                     text=e
                 )
 
+    def _generate_step_result(self, player_step, lang):
+        result = ""
+        game_value = player_step["game_value"]
+        result += f"{phrases.dict('step', lang)} {player_step["step"]}"
+        result += f"\n{game_value:04}: {player_step["bulls"]}{phrases.dict("bulls", lang)} {player_step["cows"]}{phrases.dict("cows", lang)}"
+        return result
+    
     def _generate_steps_result(self, steps, player_i, lang, names):
         result = ""
         game_value = steps[player_i]["game_value"]
@@ -464,13 +486,20 @@ class EventHandler:
         else:
             result += f"\n{game_value:04}: {steps[player_i]["bulls"]}{phrases.dict("bulls", lang)} {steps[player_i]["cows"]}{phrases.dict("cows", lang)}"
         return result
+    
+    async def _send_step_to_other_players(self, player_step, lang, names):
+        name = next((d['name'] for d in names if d['id'] == player_step['id'] and d['is_player']), "Unknown")
+        result = f"{phrases.dict('player', lang)} {name} {phrases.dict('makeStep', lang)} {player_step['step']}"
+        for name in names:
+                if name['id'] != player_step['id'] and name['is_player']:
+                    await self.bot.send_message( chat_id=name['id'], text=result )
 
     def _generate_game_results(self, game_results, player_i, lang, names):
         result = f"{phrases.dict('gameFinished', lang)}"
         if len(game_results) == 2 and game_results[0]['place'] == game_results[1]['place']:
             return f"{result} {phrases.dict("draw", lang)}"
         elif game_results[player_i]['place'] == 1:
-            result += f"{phrases.dict("youWon", lang)}\n"
+            result += f"{phrases.dict("youWon", lang)}"
         if len(game_results) > 1:
             sorted_results = sorted(game_results, key=lambda x: x['place'])
             result += f"\n{phrases.dict('gameResults', lang)}\n"
@@ -588,8 +617,16 @@ class EventHandler:
             for i in range(len(steps)):
                 if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
                     unfinished_players += 1
-
-            result = self._generate_steps_result(steps, player_i, lang, names)
+            
+            await self._send_step_to_other_players(steps[player_i], lang, names)
+            if unstepped_players > 0:
+                result = self._generate_step_result(steps[player_i], lang)
+                result += f"\n{unstepped_players} {phrases.dict('waitPlayers', lang)}"
+                await message.answer(result)
+            else:
+                for i in range(len(steps)):
+                    result = self._generate_steps_result(steps, i, lang, names)
+                    await self.bot.send_message( chat_id=steps[i]['id'], text=result )
 
             if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
                 game_msg = {
@@ -607,7 +644,6 @@ class EventHandler:
                     raise Exception(f"Game service error: {game_response['result']}")
 
             if game_response['game_stage'] == 'FINISHED':
-                await message.answer(result)
 
                 game_msg = {
                 "command": 16,  # Assuming 16 is GAME_RESULT command
@@ -627,17 +663,12 @@ class EventHandler:
                 if player_i == -1:
                     raise Exception(f"Game service not have this player for game result")
 
-                result = self._generate_game_results(game_result, player_i, lang, names)
-                await message.answer(
-                    result,
-                    reply_markup=kb.main[lang]
-                    )
+                for i in range(len(game_result)):
+                    result = self._generate_game_results(game_result, i, lang, names)
+                    await self.bot.send_message( chat_id=game_result[i]['id'], text=result )
                 await self.change_player(message, state, PlayerStates.free_state)
                 return True
             else:
-                await message.answer(result)
-                if(unstepped_players > 0):
-                    await message.answer(f"{unstepped_players} {phrases.dict('waitPlayers', lang)}")
                 return False
 
         except asyncio.TimeoutError:
