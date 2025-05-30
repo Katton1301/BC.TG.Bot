@@ -1,12 +1,9 @@
-from aiogram import Dispatcher
 from aiogram import types, F, Router
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.state import State, StatesGroup
 import keyboards as kb
 from phrases import phrases
-import logging
 
 router = Router()
 

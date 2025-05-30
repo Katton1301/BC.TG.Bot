@@ -12,6 +12,7 @@ from aiogram.fsm.storage.base import StorageKey
 from message_handler import PlayerStates
 from aiogram import Dispatcher
 from aiogram import Bot
+from aiogram.types import ReplyKeyboardRemove
 
 # Settings
 SERVER_ID = 1
@@ -96,14 +97,13 @@ class EventHandler:
                 logging.info(f"restore user - {user_id} state - {await state.get_state()}")
 
             for player_game in db_response['player_games']:
-                if player_game["is_current_game"]:
-                    for game in games:
-                        if player_game['game_id'] == game['game_id']:
-                            game['players'].append( { 
-                                "id": player_game['player_id'],
-                                "is_host": player_game['is_host'],
-                            } )
-                            break
+                for game in games:
+                    if player_game['game_id'] == game['game_id']:
+                        game['players'].append( { 
+                            "id": player_game['player_id'],
+                            "is_host": player_game['is_host'],
+                        } )
+                        break
             
             for history in db_response['history']:
                 for game in games:
@@ -398,7 +398,7 @@ class EventHandler:
         ok = await self._start_game(game_id, message.from_user.id)
         if ok:
             lang = message.from_user.language_code
-            await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}")
+            await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}", reply_markup=ReplyKeyboardRemove())
             await self.change_player(message, state, PlayerStates.waiting_for_number)
         else:
             await message.answer("Failed to start game")
@@ -420,7 +420,7 @@ class EventHandler:
             await self.change_player(message, state, PlayerStates.waiting_a_rival)
             player['state'] = await state.get_state()
             self.waiting_player = player
-            await message.answer(f"{phrases.dict('waitingForOpponent', lang)}")
+            await message.answer(f"{phrases.dict('waitingForOpponent', lang)}", reply_markup=ReplyKeyboardRemove())
         else:
             await self._start_random_game(self.waiting_player, player)
             self.waiting_player = None
@@ -448,7 +448,8 @@ class EventHandler:
                     lang = player['lang']
                     await self.bot.send_message(
                         chat_id=player['player_id'],
-                        text=f"{phrases.dict('gameCreated', lang)}\n{phrases.dict('yourTurn', lang)}"
+                        text=f"{phrases.dict('gameCreated', lang)}\n{phrases.dict('yourTurn', lang)}", 
+                        reply_markup=ReplyKeyboardRemove()
                     )
             else:
                 raise Exception("Failed to start game")
@@ -622,11 +623,12 @@ class EventHandler:
             if unstepped_players > 0:
                 result = self._generate_step_result(steps[player_i], lang)
                 result += f"\n{unstepped_players} {phrases.dict('waitPlayers', lang)}"
-                await message.answer(result)
+                await message.answer(result, reply_markup=ReplyKeyboardRemove())
             else:
                 for i in range(len(steps)):
-                    result = self._generate_steps_result(steps, i, lang, names)
-                    await self.bot.send_message( chat_id=steps[i]['id'], text=result )
+                    if steps[i]["player"]:
+                        result = self._generate_steps_result(steps, i, lang, names)
+                        await self.bot.send_message( chat_id=steps[i]['id'], text=result, reply_markup=ReplyKeyboardRemove() )
 
             if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
                 game_msg = {
@@ -664,8 +666,9 @@ class EventHandler:
                     raise Exception(f"Game service not have this player for game result")
 
                 for i in range(len(game_result)):
-                    result = self._generate_game_results(game_result, i, lang, names)
-                    await self.bot.send_message( chat_id=game_result[i]['id'], text=result )
+                    if game_result[i]['player']:
+                        result = self._generate_game_results(game_result, i, lang, names)
+                        await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.main[lang] )
                 await self.change_player(message, state, PlayerStates.free_state)
                 return True
             else:
@@ -700,13 +703,13 @@ class EventHandler:
 
             logger.info(f"Starting game for user_id: {player_id}")
 
-            self._add_computer_to_game(game_id, player_id, level)
+            await self._add_computer_to_game(game_id, player_id, level)
 
             logger.info(f"Starting single game for user_id: {player_id}")
             ok = await self._start_game(game_id, player_id)
             if ok:
                 lang = message.from_user.language_code
-                await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}")
+                await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}", reply_markup=ReplyKeyboardRemove())
                 await self.change_player(message, state, PlayerStates.waiting_for_number)
             else:
                 await message.answer("Failed to start game")
