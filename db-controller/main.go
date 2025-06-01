@@ -213,6 +213,17 @@ func main() {
     log.Printf("Failed to insert player: %v", err)
    }
 
+  case "update_lang_player":
+   var player PlayerData
+   if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
+    log.Printf("Failed to parse player data: %v", err)
+    continue
+   }
+   err = handleUpdateLangPlayer(conn, player)
+   if err != nil {
+    log.Printf("Failed to update lang player: %v", err)
+   }
+
   case "create_game":
    var game GameData
    if err := json.Unmarshal(kafkaMsg.Data, &game); err != nil {
@@ -373,6 +384,22 @@ func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
     } else {
         log.Printf("Updated player with id %d", player.Id)
     }
+
+    return nil
+}
+
+func handleUpdateLangPlayer(conn *pgx.Conn, player PlayerData) error {
+    _, err := conn.Exec(context.Background(),
+        `UPDATE players SET
+            lang = $2
+        WHERE id = $1`,
+        player.Id, player.Lang)
+
+    if err != nil {
+        return fmt.Errorf("failed to update lang player: %w", err)
+    }
+
+    log.Printf("Updated lang player with id %d", player.Id)
 
     return nil
 }

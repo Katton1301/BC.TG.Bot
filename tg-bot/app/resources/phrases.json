@@ -1,5 +1,6 @@
 {
     "ru": {
+        "name": "Русский",
         "greeting": "Привет! Я бот 'Быки и Коровы'. Вот, что я умею!",
         "menu": "Меню",
         "help": "Я бот 'Быки и Коровы'. Я могу сыграть с тобой или ты можешь сыграть против случайных игроков. Так же ты можешь сыграть с друзьями через лобби. Так же могу расказать правила иргы.",
@@ -45,9 +46,11 @@
         "function": "Функция",
         "underway": "в разработке",
         "writeFeedback": "Напишите свои отзывы и пожелания. Мы их обязательно учтем и напишем ответ!",
-        "feedbackSent": "Ваш отзыв отправлен!"
+        "feedbackSent": "Ваш отзыв отправлен!",
+        "langChanged": "Язык изменен!"
     },
     "en": {
+        "name": "English",
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
         "menu": "Menu",
         "help": "I am a bot 'Bulls and Cows'. I can play with you or you can play against random players. You can also play with friends through the lobby. I can also tell you the rules of the game.",
@@ -55,7 +58,7 @@
         "rules": "Rules",
         "fullRules": "Rules of the game 'Bulls and Cows': A number of 4 unique digits is guessed. The player tries to guess. If the digit is there and in place, it is a 'bull'. If the digit is there but out of place, it is a 'cow'. For example, 1234 is guessed, but 1359 is named - one bull (1) and one cow (3). The goal is to guess the number in a minimum of attempts. Everything is simple: you name the options, get hints, analyze and win. The main thing is logic and attention. Play, count, win!",
         "lang": "Change language",
-        "feedback": "feedback",
+        "feedback": "Feedback",
         "chooseGameMode": "Choose game mode",
         "singlePlay": "Single play",
         "botPlay": "Play versus Bot",
@@ -93,6 +96,7 @@
         "function": "Function",
         "underway": "underway",
         "writeFeedback": "Write your comments and wishes. We will definitely take them into account and write a response!",
-        "feedbackSent": "Your feedback has been sent!"
+        "feedbackSent": "Your feedback has been sent!",
+        "langChanged": "Lang changed"
     }
 }

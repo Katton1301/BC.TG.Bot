@@ -13,7 +13,7 @@ class Phrases:
 
     def dict(self, name, lang):
         if lang not in self._phrases_dict:
-            lang = 'en'
+            return ""
         return self._phrases_dict[lang][name]
     
     def checkPhrase(self, name, text):

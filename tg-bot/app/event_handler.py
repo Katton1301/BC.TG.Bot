@@ -24,7 +24,6 @@ class EventHandler:
     def __init__(self, bot, dp):
         self.bot: Bot = bot
         self.dp: Dispatcher = dp
-        self.event_queue = asyncio.Queue()
         self.running = False
         kafka_bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
         kafka_config = {
@@ -34,6 +33,9 @@ class EventHandler:
             "game_send_topic": os.environ['TOPIC_GAME_SEND'],
         }
         self.waiting_player = None
+        self.langs = dict()
+
+        kb.create_keyboards()
 
         self.kafka = KafkaHandler(kafka_bootstrap_servers, kafka_config)
 
@@ -91,6 +93,7 @@ class EventHandler:
                 storage_key = StorageKey(chat_id=user_id, user_id=user_id, bot_id=self.bot.id)
                 state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
                 await state.set_state(state_name)
+                self.langs[user_id] = player['lang']
                 
                 if await state.get_state() == PlayerStates.waiting_a_rival:
                     self.waiting_player = player
@@ -146,6 +149,7 @@ class EventHandler:
 
     async def insert_player(self, message: Any, state: FSMContext):
         await state.set_state(PlayerStates.main_menu_state)
+        self.langs[message.from_user.id] = message.from_user.language_code
         player = {
             "player_id": message.from_user.id,
             "firstname": message.from_user.first_name,
@@ -159,6 +163,8 @@ class EventHandler:
 
     async def change_player(self, message: Any, state: FSMContext, new_state: State):
         await state.set_state(new_state)
+        if message.from_user.id not in self.langs:
+            self.langs[message.from_user.id] = message.from_user.language_code
         player = {
             "player_id": message.from_user.id,
             "firstname": message.from_user.first_name,
@@ -771,6 +777,7 @@ class EventHandler:
             lang = message.from_user.language_code
             await message.answer(f"{phrases.dict("feedbackSent", lang)}", reply_markup=kb.main[lang])
             await self.change_player(message, state, PlayerStates.main_menu_state)
+            return True
 
         except asyncio.TimeoutError:
             error_msg = "Game start timeout. Please try again later."
@@ -782,3 +789,32 @@ class EventHandler:
             logger.exception(f"Failed to send feedback for user {player_id}")
             await message.answer(str(e))
             return False
+        
+    async def change_lang(self, message: types.Message, state: FSMContext ):
+        for lang in phrases.langs():
+            if phrases.dict('name', lang) == str(message.text):
+                player = {
+                    "player_id": message.from_user.id,
+                    "firstname": message.from_user.first_name,
+                    "lastname": message.from_user.last_name,
+                    "fullname": message.from_user.full_name,
+                    "username": message.from_user.username,
+                    "lang": lang,
+                    "state": await state.get_state()
+                }
+                player_data = {
+                    "command": "update_lang_player",
+                    "data": player,
+                    "timestamp": str(datetime.now())
+                }
+                try:
+                    await self.kafka.send_to_bd(player_data)
+                    logger.info(f"Successfully sent player update lang for user_id: {player['player_id']}")
+                except Exception as e:
+                    logger.error(f"Failed to send player data to Kafka: {str(e)}")
+
+                self.langs[message.from_user.id] = lang
+                await message.answer(f"{phrases.dict("langChanged", lang)}", reply_markup=kb.main[lang])
+                await self.change_player(message, state, PlayerStates.main_menu_state)
+
+                

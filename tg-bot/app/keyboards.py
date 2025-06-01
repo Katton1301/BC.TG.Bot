@@ -5,35 +5,47 @@ from phrases import phrases
 main = dict()
 game = dict()
 bot = dict()
+lang = dict()
 
-for lang in phrases.langs():
-    main[lang] = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=phrases.dict('game', lang))],
-            [KeyboardButton(text=phrases.dict('rules', lang))],
-            [KeyboardButton(text=phrases.dict('lang', lang))],
-            [KeyboardButton(text=phrases.dict('feedback', lang))]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    game[lang] =  ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=phrases.dict('singlePlay', lang)), KeyboardButton(text=phrases.dict('botPlay', lang))],
-            [KeyboardButton(text=phrases.dict('randomPlay', lang))],
-            [KeyboardButton(text=phrases.dict('createLobby', lang)), KeyboardButton(text=phrases.dict('enterLobby', lang))],
-            [KeyboardButton(text=phrases.dict('back', lang))],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    bot[lang] =  ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=phrases.dict('easy', lang))],
-            [KeyboardButton(text=phrases.dict('medium', lang))],
-            [KeyboardButton(text=phrases.dict('hard', lang))],
-            [KeyboardButton(text=phrases.dict('back', lang))],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
+def create_keyboards():
+    for _lang in phrases.langs():
+        main[_lang] = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('game', _lang))],
+                [KeyboardButton(text=phrases.dict('rules', _lang))],
+                [KeyboardButton(text=phrases.dict('lang', _lang))],
+                [KeyboardButton(text=phrases.dict('feedback', _lang))]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        game[_lang] =  ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('singlePlay', _lang)), KeyboardButton(text=phrases.dict('botPlay', _lang))],
+                [KeyboardButton(text=phrases.dict('randomPlay', _lang))],
+                [KeyboardButton(text=phrases.dict('createLobby', _lang)), KeyboardButton(text=phrases.dict('enterLobby', _lang))],
+                [KeyboardButton(text=phrases.dict('back', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        bot[_lang] =  ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('easy', _lang))],
+                [KeyboardButton(text=phrases.dict('medium', _lang))],
+                [KeyboardButton(text=phrases.dict('hard', _lang))],
+                [KeyboardButton(text=phrases.dict('back', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+    
+        keyboard_langs = []
+        for lng in phrases.langs():
+            keyboard_langs.append([KeyboardButton(text=phrases.dict('name', lng))])
+        keyboard_langs.append([KeyboardButton(text=phrases.dict('back', _lang))])
+        lang[_lang] = ReplyKeyboardMarkup(
+            keyboard=keyboard_langs,
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
