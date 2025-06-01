@@ -445,7 +445,7 @@ class EventHandler:
             "lang": self.langs[message.from_user.id],
             "state": await state.get_state()
         }
-        if self.waiting_player is None:
+        if self.waiting_player is None or self.waiting_player["player_id"] == message.from_user.id:
             lang = self.langs[message.from_user.id]
             await self.change_player(message, state, PlayerStates.waiting_a_rival)
             player['state'] = await state.get_state()
@@ -530,7 +530,7 @@ class EventHandler:
         if len(game_results) == 2 and game_results[0]['place'] == game_results[1]['place']:
             return f"{result} {phrases.dict("draw", lang)}"
         elif game_results[player_i]['place'] == 1:
-            result += f"{phrases.dict("youWon", lang)}"
+            result += f" {phrases.dict("youWon", lang)}"
         if len(game_results) > 1:
             sorted_results = sorted(game_results, key=lambda x: x['place'])
             result += f"\n{phrases.dict('gameResults', lang)}\n"
