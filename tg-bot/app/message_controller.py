@@ -4,6 +4,7 @@ import keyboards as kb
 from phrases import phrases
 from event_handler import EventHandler
 from player_state import PlayerStates
+from aiogram.types import ReplyKeyboardRemove
 
 
 import logging
@@ -43,10 +44,10 @@ class MessageController:
                 answer,
                 reply_markup=kb.main[lang])
         elif phrases.checkPhrase("feedback", str(message.text)):
-            answer = f"{phrases.dict("function",lang)} '{phrases.dict("feedback",lang)}' {phrases.dict("underway",lang)}"
+            await self.eh.change_player(message, state, PlayerStates.feedback_state)
             await message.answer(
-                answer,
-                reply_markup=kb.main[lang])
+                phrases.dict("writeFeedback",lang),
+                reply_markup=ReplyKeyboardRemove())
         elif message.text.isdigit():
             await message.answer(phrases.dict("warningDigit", lang), reply_markup=kb.main[lang])
         else:
@@ -103,6 +104,9 @@ class MessageController:
             await message.answer(phrases.dict("warningNotDigit", lang))
         else:
             await self.eh.do_step(message, state)
+
+    async def state_feedback(self, message: types.Message, state: FSMContext):
+        await self.eh.send_feedback(message, state)
 
     async def state_waiting_a_rival(self, message: types.Message, state: FSMContext):
         lang = message.from_user.language_code

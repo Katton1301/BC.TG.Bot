@@ -14,6 +14,7 @@ async def setup_event_handler(eh):
     router.message.register(handle_bot_difficulty, StateFilter(PlayerStates.choose_bot_difficulty))
     router.message.register(handle_number_input, StateFilter(PlayerStates.waiting_for_number))
     router.message.register(handle_waiting_a_rival, StateFilter(PlayerStates.waiting_a_rival))
+    router.message.register(handle_feedback, StateFilter(PlayerStates.feedback_state))
     router.message.register(unhandled_message)
     router.controller = MessageController(eh)
 
@@ -44,6 +45,10 @@ async def handle_number_input(message: types.Message, state: FSMContext):
 @router.message(StateFilter(PlayerStates.waiting_a_rival))
 async def handle_waiting_a_rival(message: types.Message, state: FSMContext):
     await router.controller.state_waiting_a_rival(message, state)
+
+@router.message(StateFilter(PlayerStates.feedback_state))
+async def handle_feedback(message: types.Message, state: FSMContext):
+    await router.controller.state_feedback(message, state)
 
 @router.message()
 async def unhandled_message(message: types.Message, state: FSMContext):

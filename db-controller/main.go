@@ -62,6 +62,11 @@ type GamesHistoryData struct {
   IsComputer bool `json:"is_computer"`
 }
 
+type FeedBackData struct {
+    UserName string `json:"username"`
+    Message string `json:"message"`
+}
+
 type GameNameData struct {
     Id       int64  `json:"id"`
     IsPlayer bool   `json:"is_player"`
@@ -240,6 +245,17 @@ func main() {
    err = handleAddPlayerGame(conn, playerGame)
    if err != nil {
     log.Printf("Failed to add player game: %v", err)
+   }
+
+  case "feedback":
+   var feedback FeedBackData
+   if err := json.Unmarshal(kafkaMsg.Data, &feedback); err != nil {
+    log.Printf("Failed to parse feedback data: %v", err)
+    continue
+   }
+   err = handleFeedback(conn, feedback)
+   if err != nil {
+    log.Printf("Failed to add feedback: %v", err)
    }
 
   case "get_current_game":
@@ -450,20 +466,34 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
 }
 
 func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
-  _, err := conn.Exec(context.Background(),
+    _, err := conn.Exec(context.Background(),
     `INSERT INTO player_games(player_id, server_id, game_id, is_current_game, is_host)
     VALUES($1, $2, $3, $4, $5)`,
     playerGame.PlayerId, playerGame.ServerId, playerGame.GameId, playerGame.IsCurrentGame, playerGame.IsHost)
 
-  if err != nil {
+    if err != nil {
     return fmt.Errorf("failed to insert player game: %w", err)
-  }
+    }
 
-  log.Printf("Inserted player game")
-  return nil
+    log.Printf("Inserted player game")
+    return nil
 }
 
-   func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64) error {
+func handleFeedback(conn *pgx.Conn, feedback FeedBackData) error {
+    _, err := conn.Exec(context.Background(),
+    `INSERT INTO feedback(username, message)
+    VALUES($1, $2)`,
+    feedback.UserName, feedback.Message)
+
+    if err != nil {
+    return fmt.Errorf("failed to add feedback: %w", err)
+    }
+
+    log.Printf("Added feedback")
+    return nil
+}
+
+func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64) error {
     var gameID int64
 
     err := conn.QueryRow(context.Background(),
@@ -502,9 +532,9 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
 
     log.Printf("Sent current game ID %d for player %d", gameID, player_id)
     return nil
-  }
+}
 
-   func handleSetCurrentGame(conn *pgx.Conn, playerGame PlayerGameData) error {
+func handleSetCurrentGame(conn *pgx.Conn, playerGame PlayerGameData) error {
     tx, err := conn.Begin(context.Background())
     if err != nil {
         return fmt.Errorf("failed to begin transaction: %w", err)
@@ -513,8 +543,8 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
 
     _, err = tx.Exec(context.Background(),
         `UPDATE player_games
-         SET is_current_game = false
-         WHERE player_id = $1`,
+            SET is_current_game = false
+            WHERE player_id = $1`,
         playerGame.PlayerId)
     if err != nil {
         return fmt.Errorf("failed to reset current games: %w", err)
@@ -522,8 +552,8 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
 
     _, err = tx.Exec(context.Background(),
         `UPDATE player_games
-         SET is_current_game = $1
-         WHERE player_id = $2 AND game_id = $3`,
+            SET is_current_game = $1
+            WHERE player_id = $2 AND game_id = $3`,
         playerGame.IsCurrentGame, playerGame.PlayerId, playerGame.GameId)
     if err != nil {
         return fmt.Errorf("failed to set current game: %w", err)
@@ -536,7 +566,7 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
     log.Printf("Set current game for player %d to game %d (is_current=%v)",
         playerGame.PlayerId, playerGame.GameId, playerGame.IsCurrentGame)
     return nil
-  }
+}
 
 func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64) error {
     games := make([]GameData, 0)
@@ -853,6 +883,25 @@ func checkAndCreateTables(conn *pgx.Conn) error {
      return err
     }
     log.Println("Table 'games_history' created successfully")
+  }
+
+  var feedBackTableExists bool
+  err = conn.QueryRow(context.Background(),
+    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'feedback')").Scan(&feedBackTableExists)
+   if err != nil {
+    return err
+  }
+
+  if !feedBackTableExists {
+    _, err := conn.Exec(context.Background(),
+     `CREATE TABLE feedback (
+      username TEXT,
+      message TEXT
+     )`)
+    if err != nil {
+     return err
+    }
+    log.Println("Table 'feedback' created successfully")
   }
 
     return nil

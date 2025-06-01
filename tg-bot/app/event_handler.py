@@ -725,3 +725,36 @@ class EventHandler:
             logger.exception(f"Failed to create game for user {player_id}")
             await message.answer(str(e))
             return False
+
+    async def send_feedback(self, message: types.Message, state: FSMContext ):
+        username = message.from_user.username
+        feedback = message.text
+        player_id = message.from_user.id
+
+        try:
+            feedback_msg = {
+                "command": "feedback",
+                "data": {
+                    "username": username,
+                    "message": feedback,
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            await self.kafka.send_to_bd(feedback_msg)
+            logger.info(f"Player {player_id} send feedback")
+
+            lang = message.from_user.language_code
+            await message.answer(f"{phrases.dict("feedbackSent", lang)}", reply_markup=kb.main[lang])
+            await self.change_player(message, state, PlayerStates.main_menu_state)
+
+        except asyncio.TimeoutError:
+            error_msg = "Game start timeout. Please try again later."
+            logger.error(f"Timeout during game creation for user {player_id}")
+            await message.answer(error_msg)
+            return False
+
+        except Exception as e:
+            logger.exception(f"Failed to send feedback for user {player_id}")
+            await message.answer(str(e))
+            return False
