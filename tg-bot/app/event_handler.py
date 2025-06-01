@@ -144,6 +144,19 @@ class EventHandler:
         except Exception as e:
             logger.exception(f"Failed to init game server")
 
+    async def insert_player(self, message: Any, state: FSMContext):
+        await state.set_state(PlayerStates.main_menu_state)
+        player = {
+            "player_id": message.from_user.id,
+            "firstname": message.from_user.first_name,
+            "lastname": message.from_user.last_name,
+            "fullname": message.from_user.full_name,
+            "username": message.from_user.username,
+            "lang": message.from_user.language_code,
+            "state": await state.get_state()
+        }
+        await self._insert_player(player)
+
     async def change_player(self, message: Any, state: FSMContext, new_state: State):
         await state.set_state(new_state)
         player = {
@@ -155,15 +168,26 @@ class EventHandler:
             "lang": message.from_user.language_code,
             "state": await state.get_state()
         }
-        await self.update_player(player)
+        await self._update_player(player)
 
-    async def update_player(self, player: Any):
+    async def _insert_player(self, player: Any):
+        player_data = {
+            "command": "insert_player",
+            "data": player,
+            "timestamp": str(datetime.now())
+        }
+        try:
+            await self.kafka.send_to_bd(player_data)
+            logger.info(f"Successfully sent player insert for user_id: {player['player_id']}")
+        except Exception as e:
+            logger.error(f"Failed to send player data to Kafka: {str(e)}")
+
+    async def _update_player(self, player: Any):
         player_data = {
             "command": "change_player",
             "data": player,
             "timestamp": str(datetime.now())
         }
-
         try:
             await self.kafka.send_to_bd(player_data)
             logger.info(f"Successfully sent player update for user_id: {player['player_id']}")
@@ -443,7 +467,7 @@ class EventHandler:
                     state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
                     await state.set_state(PlayerStates.waiting_for_number)
                     player['state'] = await state.get_state()
-                    await self.update_player(player)
+                    await self._update_player(player)
                     
                     lang = player['lang']
                     await self.bot.send_message(

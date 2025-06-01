@@ -15,7 +15,7 @@ class MessageController:
         self.eh : EventHandler = eh
 
     async def command_start(self, message: types.Message, state: FSMContext):
-        await self.eh.change_player(message, state, PlayerStates.main_menu_state)
+        await self.eh.insert_player(message, state)
         lang = message.from_user.language_code
         await message.answer(phrases.dict("greeting", lang), reply_markup=kb.main[lang])
 

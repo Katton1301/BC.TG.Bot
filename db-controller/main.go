@@ -192,13 +192,23 @@ func main() {
   }
 
   switch kafkaMsg.Command {
-  case "change_player":
+  case "insert_player":
    var player PlayerData
    if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
     log.Printf("Failed to parse player data: %v", err)
     continue
    }
    err = handleInsertPlayer(conn, player)
+   if err != nil {
+    log.Printf("Failed to insert player: %v", err)
+   }
+  case "change_player":
+   var player PlayerData
+   if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
+    log.Printf("Failed to parse player data: %v", err)
+    continue
+   }
+   err = handleUpdatePlayer(conn, player)
    if err != nil {
     log.Printf("Failed to insert player: %v", err)
    }
@@ -322,24 +332,49 @@ func main() {
 }
 
 func handleInsertPlayer(conn *pgx.Conn, player PlayerData) error {
- _, err := conn.Exec(context.Background(),
-  `INSERT INTO players(id, firstname, lastname, fullname, username, lang, state)
-  VALUES($1, $2, $3, $4, $5, $6, $7)
-  ON CONFLICT (id) DO UPDATE SET
-   firstname = EXCLUDED.firstname,
-   lastname = EXCLUDED.lastname,
-   fullname = EXCLUDED.fullname,
-   username = EXCLUDED.username,
-   lang = EXCLUDED.lang,
-   state = EXCLUDED.state`,
-  player.Id, player.FirstName, player.LastName, player.FullName, player.UserName, player.Lang, player.State)
+    _, err := conn.Exec(context.Background(),
+        `INSERT INTO players(id, firstname, lastname, fullname, username, lang, state)
+        VALUES($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO NOTHING`,
+        player.Id, player.FirstName, player.LastName, player.FullName, 
+        player.UserName, player.Lang, player.State)
 
-  if err != nil {
-    return fmt.Errorf("failed to upsert player: %w", err)
-  }
+    if err != nil {
+        return fmt.Errorf("failed to insert player: %w", err)
+    }
 
-   log.Printf("Upserted player with id %d", player.Id)
-   return nil
+    log.Printf("Inserted new player with id %d", player.Id)
+    return nil
+}
+
+func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
+    cmdTag, err := conn.Exec(context.Background(),
+        `UPDATE players SET
+            firstname = $1,
+            lastname = $2,
+            fullname = $3,
+            username = $4,
+            state = $5
+        WHERE id = $6`,
+        player.FirstName, player.LastName, player.FullName,
+        player.UserName, player.State, player.Id)
+
+    if err != nil {
+        return fmt.Errorf("failed to update player: %w", err)
+    }
+
+    if cmdTag.RowsAffected() == 0 {
+        err = handleInsertPlayer(conn,player)
+
+        if err != nil {
+            return fmt.Errorf("failed to insert new player: %w", err)
+        }
+        log.Printf("Created new player with id %d", player.Id)
+    } else {
+        log.Printf("Updated player with id %d", player.Id)
+    }
+
+    return nil
 }
 
 func handleCreateGame(conn *pgx.Conn, correlation_id string, game GameData) error {
