@@ -427,7 +427,7 @@ class EventHandler:
         logger.info(f"Starting single game for user_id: {message.from_user.id}")
         ok = await self._start_game(game_id, message.from_user.id)
         if ok:
-            lang = message.from_user.language_code
+            lang = self.langs[message.from_user.id]
             await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}", reply_markup=ReplyKeyboardRemove())
             await self.change_player(message, state, PlayerStates.waiting_for_number)
         else:
@@ -442,11 +442,11 @@ class EventHandler:
             "lastname": message.from_user.last_name,
             "fullname": message.from_user.full_name,
             "username": message.from_user.username,
-            "lang": message.from_user.language_code,
+            "lang": self.langs[message.from_user.id],
             "state": await state.get_state()
         }
         if self.waiting_player is None:
-            lang = message.from_user.language_code
+            lang = self.langs[message.from_user.id]
             await self.change_player(message, state, PlayerStates.waiting_a_rival)
             player['state'] = await state.get_state()
             self.waiting_player = player
@@ -475,7 +475,7 @@ class EventHandler:
                     player['state'] = await state.get_state()
                     await self._update_player(player)
                     
-                    lang = player['lang']
+                    lang = self.langs[player['player_id']]
                     await self.bot.send_message(
                         chat_id=player['player_id'],
                         text=f"{phrases.dict('gameCreated', lang)}\n{phrases.dict('yourTurn', lang)}", 
@@ -551,8 +551,9 @@ class EventHandler:
 
     async def do_step( self, message: types.Message, state: FSMContext ):
         try:
+            lang = self.langs[message.from_user.id]
             if not message.text.isdigit():
-                raise Exception(phrases.dict("invalidNumberFormat", message.from_user.language_code))
+                raise Exception(phrases.dict("invalidNumberFormat", lang))
 
             get_current_game_msg = {
                 "command": "get_current_game",
@@ -578,6 +579,11 @@ class EventHandler:
                 raise Exception("Invalid do step response from game service")
 
             if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
+
+                if game_response['result'] == 13:  # Assuming 13 is INVALID_GAME_VALUE code
+                    await message.answer(phrases.dict("errorInvalidGameValue", lang))
+                    return False
+
                 raise Exception(f"Game service error: {game_response['result']}")
 
             if "steps" not in game_response:
@@ -639,7 +645,6 @@ class EventHandler:
 
             names = db_response['names']
 
-            lang = message.from_user.language_code
             unfinished_players = 0
             unstepped_players = 0
             if 'unstepped_players' in game_response:
@@ -721,6 +726,7 @@ class EventHandler:
         if game_id == 0:
             return False
         try:
+            lang = self.langs[message.from_user.id]
             level = None
             if phrases.checkPhrase("easy", str(message.text)):
                 level = "Easy"
@@ -729,7 +735,7 @@ class EventHandler:
             if phrases.checkPhrase("hard", str(message.text)):
                 level = "Hard"
             if level is None:
-                raise Exception(phrases.dict("invalidBotLevel", message.from_user.language_code))
+                raise Exception(phrases.dict("invalidBotLevel", lang))
 
             logger.info(f"Starting game for user_id: {player_id}")
 
@@ -738,7 +744,6 @@ class EventHandler:
             logger.info(f"Starting single game for user_id: {player_id}")
             ok = await self._start_game(game_id, player_id)
             if ok:
-                lang = message.from_user.language_code
                 await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}", reply_markup=ReplyKeyboardRemove())
                 await self.change_player(message, state, PlayerStates.waiting_for_number)
             else:
@@ -774,7 +779,7 @@ class EventHandler:
             await self.kafka.send_to_bd(feedback_msg)
             logger.info(f"Player {player_id} send feedback")
 
-            lang = message.from_user.language_code
+            lang = self.langs[message.from_user.id]
             await message.answer(f"{phrases.dict("feedbackSent", lang)}", reply_markup=kb.main[lang])
             await self.change_player(message, state, PlayerStates.main_menu_state)
             return True

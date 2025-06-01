@@ -47,7 +47,8 @@
         "underway": "в разработке",
         "writeFeedback": "Напишите свои отзывы и пожелания. Мы их обязательно учтем и напишем ответ!",
         "feedbackSent": "Ваш отзыв отправлен!",
-        "langChanged": "Язык изменен!"
+        "langChanged": "Язык изменен!",
+        "errorInvalidGameValue": "Некорректное число!"
     },
     "en": {
         "name": "English",
@@ -97,6 +98,7 @@
         "underway": "underway",
         "writeFeedback": "Write your comments and wishes. We will definitely take them into account and write a response!",
         "feedbackSent": "Your feedback has been sent!",
-        "langChanged": "Lang changed"
+        "langChanged": "Lang changed",
+        "errorInvalidGameValue": "Invalid game value"
     }
 }
