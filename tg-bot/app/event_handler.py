@@ -9,7 +9,7 @@ import keyboards as kb
 from aiogram.fsm.state import State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
-from message_handler import PlayerStates
+from player_state import PlayerStates
 from aiogram import Dispatcher
 from aiogram import Bot
 from aiogram.types import ReplyKeyboardRemove
@@ -669,7 +669,7 @@ class EventHandler:
                     if game_result[i]['player']:
                         result = self._generate_game_results(game_result, i, lang, names)
                         await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.main[lang] )
-                await self.change_player(message, state, PlayerStates.free_state)
+                await self.change_player(message, state, PlayerStates.main_menu_state)
                 return True
             else:
                 return False

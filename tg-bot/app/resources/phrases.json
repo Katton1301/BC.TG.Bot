@@ -38,7 +38,12 @@
         "back": "Назад",
         "waitingForOpponent": "Ожидаем оппонента...",
         "warningDigit": "Сначала, выбирите режим игры и войдите в неё!",
-        "makeStep": "cделал ход"
+        "makeStep": "cделал ход",
+        "warningNotDigit": "Вводите только число!",
+        "chooseMenuItem": "Выберите пункт меню",
+        "rivalStillWaiting": "Оппонент еще не найден. Пожалуйста подождите!",
+        "function": "Функция",
+        "underway": "в разработке"
     },
     "en": {
         "greeting": "Hi! I'm the 'Bulls and Cows' bot. Here's what I can do!",
@@ -79,6 +84,11 @@
         "back": "Back",
         "waitingForOpponent": "Waiting for the opponent...",
         "warningDigit": "First, choose the game mode and enter it!",
-        "makeStep": "make step"
+        "makeStep": "make step",
+        "warningNotDigit": "Enter only number!",
+        "chooseMenuItem": "Choose menu item",
+        "rivalStillWaiting": "Opponent is still waiting. Please wait.",
+        "function": "Function",
+        "underway": "underway"
     }
 }

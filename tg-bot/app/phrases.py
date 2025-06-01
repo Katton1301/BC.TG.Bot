@@ -11,7 +11,6 @@ class Phrases:
         for lang in self._phrases_dict.keys():
             self._available_langs.append(lang)
 
-
     def dict(self, name, lang):
         if lang not in self._phrases_dict:
             lang = 'en'
