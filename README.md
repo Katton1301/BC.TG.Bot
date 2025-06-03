@@ -35,10 +35,10 @@ Before you begin, ensure you have the following installed:
 Create a .env file in the project root with the following content:
 
 ### Configuration
-TG_API_BC_TOKEN=_your telegram bot token_ 
-POSTGRES_USER=_username for admin_ 
-POSTGRES_PASSWORD=_your secure password_ 
-ADMIN_EMAIL=_your email_ 
+TG_API_BC_TOKEN=_your telegram bot token_  
+POSTGRES_USER=_username for admin_  
+POSTGRES_PASSWORD=_your secure password_  
+ADMIN_EMAIL=_your email_  
 
 ## 2. Build and start the containers
 
