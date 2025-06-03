@@ -30,17 +30,17 @@ Before you begin, ensure you have the following installed:
 - Git
 - Telegram account (for testing the bot)
 
-### 1. Create environment files
+## 1. Create environment files
 
 Create a .env file in the project root with the following content:
 
-# Configuration
-TG_API_BC_TOKEN="your telegram bot token"
-POSTGRES_USER="username for admin"
-POSTGRES_PASSWORD="your secure password"
-ADMIN_EMAIL="your email"
+### Configuration
+TG_API_BC_TOKEN=_your telegram bot token_ 
+POSTGRES_USER=_username for admin_ 
+POSTGRES_PASSWORD=_your secure password_ 
+ADMIN_EMAIL=_your email_ 
 
-### 2. Build and start the containers
+## 2. Build and start the containers
 
 docker-compose up -d --build
 This will:
@@ -49,7 +49,7 @@ This will:
 - Build and start all application components
 - Create necessary Kafka topics
 
-### 4. Verify the installation
+## 3. Verify the installation
 
 Check that all containers are running:
 
