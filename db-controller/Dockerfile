@@ -18,7 +18,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY --from=builder /db-server .
-COPY --from=builder /app/.env .
 COPY --from=builder /app/computer_names.json .
 
 CMD ["./db-server"]
