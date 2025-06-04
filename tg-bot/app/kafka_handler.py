@@ -141,7 +141,7 @@ class KafkaHandler:
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout waiting for response to {correlation_id}")
                 self.pending_requests.pop(correlation_id, None)
-                return None
+                return { "timeout": True }
                 
         except Exception as send_error:
             logger.error(f"Failed to send request {correlation_id}: {str(send_error)}")

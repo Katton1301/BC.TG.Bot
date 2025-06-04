@@ -48,7 +48,10 @@
         "writeFeedback": "Напишите свои отзывы и пожелания. Мы их обязательно учтем и напишем ответ!",
         "feedbackSent": "Ваш отзыв отправлен!",
         "langChanged": "Язык изменен!",
-        "errorInvalidGameValue": "Некорректное число!"
+        "errorInvalidGameValue": "Некорректное число!",
+        "errorTimeout": "Время ожидания сервера истекло. Попробуйте еще раз немного позже",
+        "errorMessage": "Что-то пошло не так( Пожалуйста, попробуйте позже",
+        "errorGame": "Ошибка в игре. Нам пришлось закрыть игру. Извините за неудобства("
     },
     "en": {
         "name": "English",
@@ -99,6 +102,9 @@
         "writeFeedback": "Write your comments and wishes. We will definitely take them into account and write a response!",
         "feedbackSent": "Your feedback has been sent!",
         "langChanged": "Lang changed",
-        "errorInvalidGameValue": "Invalid game value"
+        "errorInvalidGameValue": "Invalid game value",
+        "errorTimeout": "The server timed out. Please try again later.",
+        "errorMessage": "Something went wrong( Please try again later",
+        "errorGame": "There was an error in the game. We had to close the game. Sorry for the inconvenience("
     }
 }
