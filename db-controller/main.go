@@ -60,6 +60,7 @@ type GamesHistoryData struct {
   Bulls int `json:"bulls"`
   Cows int `json:"cows"`
   IsComputer bool `json:"is_computer"`
+  IsGiveUp bool `json:"is_give_up"`
 }
 
 type FeedBackData struct {
@@ -710,7 +711,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
 
     history := make([]GamesHistoryData, 0)
     rows, err = conn.Query(context.Background(),
-        `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer
+        `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up
          FROM games_history
          WHERE server_id = $1 AND game_id IN (
              SELECT id FROM games WHERE server_id = $1 AND stage != 'FINISHED'
@@ -722,7 +723,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
 
     for rows.Next() {
         var h GamesHistoryData
-        if err := rows.Scan(&h.GameId, &h.PlayerId, &h.ServerId, &h.Step, &h.GameValue, &h.Bulls, &h.Cows, &h.IsComputer); err != nil {
+        if err := rows.Scan(&h.GameId, &h.PlayerId, &h.ServerId, &h.Step, &h.GameValue, &h.Bulls, &h.Cows, &h.IsComputer, &h.IsGiveUp); err != nil {
             return fmt.Errorf("failed to scan history row: %w", err)
         }
         history = append(history, h)
@@ -939,7 +940,8 @@ func checkAndCreateTables(conn *pgx.Conn) error {
       game_value INTEGER,
       bulls INTEGER,
       cows INTEGER,
-      is_computer BOOLEAN
+      is_computer BOOLEAN,
+      is_give_up BOOLEAN
      )`)
     if err != nil {
      return err
@@ -971,9 +973,9 @@ func checkAndCreateTables(conn *pgx.Conn) error {
 
 func handleInsertStep(conn *pgx.Conn, step GamesHistoryData) error {
   _, err := conn.Exec(context.Background(),
-   `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer)
-   VALUES($1, $2, $3, $4, $5, $6, $7, $8)`,
-   step.GameId, step.PlayerId, step.ServerId, step.Step, step.GameValue, step.Bulls, step.Cows, step.IsComputer)
+   `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up)
+   VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+   step.GameId, step.PlayerId, step.ServerId, step.Step, step.GameValue, step.Bulls, step.Cows, step.IsComputer, step.IsGiveUp)
 
    if err != nil {
      return fmt.Errorf("failed to insert step: %w", err)
