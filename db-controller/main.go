@@ -360,24 +360,53 @@ func handleInsertPlayer(conn *pgx.Conn, player PlayerData) error {
 }
 
 func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
-    cmdTag, err := conn.Exec(context.Background(),
-        `UPDATE players SET
-            firstname = $1,
-            lastname = $2,
-            fullname = $3,
-            username = $4,
-            state = $5
-        WHERE id = $6`,
-        player.FirstName, player.LastName, player.FullName,
-        player.UserName, player.State, player.Id)
-
+    query := "UPDATE players SET"
+    args := make([]interface{}, 0)
+    argCounter := 1
+    
+    if player.FirstName != "" {
+        query += fmt.Sprintf(" firstname = $%d,", argCounter)
+        args = append(args, player.FirstName)
+        argCounter++
+    }
+    if player.LastName != "" {
+        query += fmt.Sprintf(" lastname = $%d,", argCounter)
+        args = append(args, player.LastName)
+        argCounter++
+    }
+    if player.FullName != "" {
+        query += fmt.Sprintf(" fullname = $%d,", argCounter)
+        args = append(args, player.FullName)
+        argCounter++
+    }
+    if player.UserName != "" {
+        query += fmt.Sprintf(" username = $%d,", argCounter)
+        args = append(args, player.UserName)
+        argCounter++
+    }
+    if player.State != "" {
+        query += fmt.Sprintf(" state = $%d,", argCounter)
+        args = append(args, player.State)
+        argCounter++
+    }
+    
+    if len(args) > 0 {
+        query = query[:len(query)-1]
+    } else {
+        log.Printf("No fields to update for player with id %d", player.Id)
+        return nil
+    }
+    
+    query += fmt.Sprintf(" WHERE id = $%d", argCounter)
+    args = append(args, player.Id)
+    
+    cmdTag, err := conn.Exec(context.Background(), query, args...)
     if err != nil {
         return fmt.Errorf("failed to update player: %w", err)
     }
 
     if cmdTag.RowsAffected() == 0 {
-        err = handleInsertPlayer(conn,player)
-
+        err = handleInsertPlayer(conn, player)
         if err != nil {
             return fmt.Errorf("failed to insert new player: %w", err)
         }

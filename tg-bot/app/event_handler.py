@@ -67,22 +67,18 @@ class EventHandler:
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=phrases.dict("errorMessage", lang)
-                )    
+                )
             elif error.level == ErrorLevel.GAME_ERROR:
                 logger.error(error)
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=phrases.dict("errorGame", lang)
                 )
-                await self._give_up_in_game(user_id, error.game_id)
-                storage_key = StorageKey(chat_id=user_id, user_id=user_id, bot_id=self.bot.id)
-                state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
-                await state.set_state(PlayerStates.main_menu_state)
-                player = {
-                    "player_id": user_id,
-                    "state": await state.get_state()
-                }
-                await self._update_player(player)
+                if error.game_id != 0:
+                    await self._give_up_in_game(user_id, error.game_id)
+
+                await self.change_player_state_by_id(user_id, PlayerStates.main_menu_state)
+
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=phrases.dict('menu', lang),
@@ -94,7 +90,7 @@ class EventHandler:
                     chat_id=user_id,
                     text=phrases.dict("errorMessage", lang)
                 )
-            
+
         except Exception as e:
             logger.error(f"Failed to handle error for user {user_id}: {str(e)}")
 
@@ -127,7 +123,7 @@ class EventHandler:
                     raise asyncio.TimeoutError()
                 if not db_response:
                     raise Exception("No response from database")
-                
+
                 required_fields = ['games', 'players', 'player_games', 'computer_games', 'history']
                 for field in required_fields:
                     if field not in db_response:
@@ -152,7 +148,7 @@ class EventHandler:
                     state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
                     await state.set_state(state_name)
                     self.langs[user_id] = player['lang']
-                    
+
                     if await state.get_state() == PlayerStates.waiting_a_rival:
                         self.waiting_player = player
                     logger.info(f"restore user - {user_id} state - {await state.get_state()}")
@@ -160,12 +156,12 @@ class EventHandler:
                 for player_game in db_response['player_games']:
                     for game in games:
                         if player_game['game_id'] == game['game_id']:
-                            game['players'].append({ 
+                            game['players'].append({
                                 "id": player_game['player_id'],
                                 "is_host": player_game['is_host'],
                             })
                             break
-                
+
                 for history in db_response['history']:
                     for game in games:
                         if history['game_id'] == game['game_id']:
@@ -198,7 +194,7 @@ class EventHandler:
                         raise asyncio.TimeoutError()
                     if not game_response or 'result' not in game_response:
                         raise Exception("Invalid start game response from game service")
-                    
+
 
                     if game_response['result'] != 1:  # SUCCESS code
                         raise Exception(f"Game service error: {game_response['result']}")
@@ -251,6 +247,16 @@ class EventHandler:
         }
         return await self._update_player(player)
 
+    async def change_player_state_by_id(self, player_id, player_state : PlayerStates):
+        storage_key = StorageKey(chat_id=player_id, user_id=player_id, bot_id=self.bot.id)
+        state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
+        await state.set_state(player_state)
+        player = {
+            "player_id": player_id,
+            "state": await state.get_state()
+        }
+        return await self._update_player(player)
+
     async def _insert_player(self, player: Any):
         player_data = {
             "command": "insert_player",
@@ -259,7 +265,7 @@ class EventHandler:
         }
         try:
             await self.kafka.send_to_bd(player_data)
-            
+
             logger.info(f"Successfully sent player insert for user_id: {player['player_id']}")
             return True
         except Exception as e:
@@ -453,7 +459,7 @@ class EventHandler:
 
             if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                 raise Exception(f"Game service error: {game_response['result']}")
-            
+
             return True
 
         except asyncio.TimeoutError:
@@ -464,7 +470,7 @@ class EventHandler:
         except Exception as e:
             msg = f"Failed to add player for user {player_id}"
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
-            
+
         return False
 
     async def _start_game(self, game_id, player_id) -> bool:
@@ -523,11 +529,12 @@ class EventHandler:
         except Exception as e:
             msg = f"Failed to create game for user {player_id}"
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
-            
+
         return False
-    
+
     async def _give_up_in_game(self, player_id, game_id):
         try:
+            lang = self.langs[player_id]
             game_msg = {
                 "command": 11,  # Assuming 11 is PLAYER_GIVE_UP command
                 "server_id": SERVER_ID,
@@ -542,14 +549,14 @@ class EventHandler:
 
             if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                 raise Exception(f"Game service error: {game_response['result']}")
-            
+
             if "steps" not in game_response:
                 raise Exception(f"Game service not have this player steps")
 
             steps = game_response['steps']
-            
+
             unfinished_players = 0
-            player_i = -1
+            player_i = next((i for i, step in enumerate(steps) if step['player'] and step['id'] == player_id), -1)
             for i in range(len(steps)):
                 if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
                     unfinished_players += 1
@@ -605,32 +612,32 @@ class EventHandler:
                 raise Exception("Invalid response from database: wrong names")
 
             names = db_response['names']
-            
+
             ok = await self._send_give_up_to_other_players(steps[player_i], lang, names)
             if not ok: False
 
-            if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
-                ok = self._finish_game(player_id, game_id)
+            if steps[player_i]['finished'] and unfinished_players == 0:
+                ok = await self._finish_game(player_id, game_id, names)
                 if not ok: False
-
-            if game_response["game_stage"] == "FINISHED":
-                return self._send_game_results(player_id, game_id, names)
+            elif game_response["game_stage"] == "FINISHED":
+                await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+                return await self._send_game_results(player_id, game_id, names)
             
             return True
 
         except asyncio.TimeoutError:
-            lang = self.langs[player_id]
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
         except Exception as e:
             msg = f"Failed to give up in game for user {player_id} error - {e}"
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
-            
+
         return False
     
-    async def _finish_game(self, player_id, game_id):
+    async def _finish_game(self, player_id, game_id, names):
         try:
+            lang = self.langs[player_id]
             game_msg = {
                 "command": 15,  # Assuming 15 is FINISH_GAME command
                 "server_id": SERVER_ID,
@@ -645,18 +652,20 @@ class EventHandler:
 
             if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                 raise Exception(f"Game service error: {game_response['result']}")
+            
+            await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+            return await self._send_game_results(player_id, game_id, lang, names)
 
         except asyncio.TimeoutError:
-            lang = self.langs[player_id]
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
         except Exception as e:
             msg = f"Failed to finish game in game for user {player_id}"
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
-            
+
         return False
-    
+
     async def _send_game_results(self, player_id, game_id, lang, names):
         try:
             game_msg = {
@@ -683,15 +692,7 @@ class EventHandler:
                 if game_result[i]['player']:
                     result = self._generate_game_results(game_result, i, lang, names)
                     await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.main[lang] )
-            storage_key = StorageKey(chat_id=player_id, user_id=player_id, bot_id=self.bot.id)
-            state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
-            await state.set_state(PlayerStates.main_menu_state)
-            player = {
-                "player_id": player_id,
-                "state": await state.get_state()
-            }
-            return await self._update_player(player)
-        
+
         except asyncio.TimeoutError:
             lang = self.langs[player_id]
             msg = phrases.dict("errorTimeout", lang)
@@ -733,11 +734,35 @@ class EventHandler:
             if not ok: return False
             player['state'] = await state.get_state()
             self.waiting_player = player
+            asyncio.create_task(self._remove_waiting_player_after_timeout(message.from_user.id, lang))
             await message.answer(f"{phrases.dict('waitingForOpponent', lang)}", reply_markup=ReplyKeyboardRemove())
         else:
             ok = await self._start_random_game(self.waiting_player, player)
             if not ok: return False
             self.waiting_player = None
+
+    async def _remove_waiting_player_after_timeout(self, player_id: int, lang: str):
+        await asyncio.sleep(60)
+
+        if self.waiting_player and self.waiting_player["player_id"] == player_id:
+            try:
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict('waitingTimeout', lang),
+                    reply_markup=kb.main[lang]
+                )
+
+                ok = await self.change_player_state_by_id(
+                    player_id,
+                    PlayerStates.main_menu_state
+                )
+                if not ok: return False
+
+            except Exception as e:
+                logging.error(f"Error notifying player about timeout: {e}")
+            finally:
+                self.waiting_player = None
+                return True
 
     async def _start_random_game(self, player1, player2):
         try:
@@ -749,19 +774,15 @@ class EventHandler:
 
             ok = await self._start_game(game_id, player1['player_id'])
             if not ok: return False
-            
+
             for player in [player1, player2]:
-                storage_key = StorageKey(chat_id=player['player_id'], user_id=player['player_id'], bot_id=self.bot.id)
-                state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
-                await state.set_state(PlayerStates.waiting_for_number)
-                player['state'] = await state.get_state()
-                ok = await self._update_player(player)
+                ok = await self.change_player_state_by_id(player['player_id'], PlayerStates.waiting_for_number)
                 if not ok: continue
-                
+
                 lang = self.langs[player['player_id']]
                 await self.bot.send_message(
                     chat_id=player['player_id'],
-                    text=f"{phrases.dict('gameCreated', lang)}\n{phrases.dict('yourTurn', lang)}", 
+                    text=f"{phrases.dict('gameCreated', lang)}\n{phrases.dict('yourTurn', lang)}",
                     reply_markup=ReplyKeyboardRemove()
                 )
 
@@ -776,7 +797,7 @@ class EventHandler:
         result += f"{phrases.dict('step', lang)} {player_step["step"]}"
         result += f"\n{game_value:04}: {player_step["bulls"]}{phrases.dict("bulls", lang)} {player_step["cows"]}{phrases.dict("cows", lang)}"
         return result
-    
+
     def _generate_steps_result(self, steps, player_i, lang, names):
         result = ""
         player_step = steps[player_i]
@@ -796,14 +817,14 @@ class EventHandler:
         else:
             result += f"\n{game_value:04}: {player_step["bulls"]}{phrases.dict("bulls", lang)} {player_step["cows"]}{phrases.dict("cows", lang)}"
         return result
-    
+
     async def _send_give_up_to_other_players(self, player_step, lang, names):
         name = next((d['name'] for d in names if d['id'] == player_step['id'] and d['is_player']), "Unknown")
         result = f"{phrases.dict('player', lang)} {name} {phrases.dict('giveUp', lang)}"
         for name in names:
                 if name['id'] != player_step['id'] and name['is_player']:
                     await self.bot.send_message( chat_id=name['id'], text=result )
-    
+
     async def _send_step_to_other_players(self, player_step, lang, names):
         name = next((d['name'] for d in names if d['id'] == player_step['id'] and d['is_player']), "Unknown")
         result = f"{phrases.dict('player', lang)} {name} {phrases.dict('makeStep', lang)} {player_step['step']}"
@@ -830,7 +851,7 @@ class EventHandler:
                     name = f"{phrases.dict('bot', lang)} {name}"
                 result += f'{sorted_results[i]['place']}. {name} - {sorted_results[i]['step']} {phrases.dict('steps', lang)}'
                 if sorted_results[i]['give_up']:
-                    result += f"{phrases.dict('gaveUp', lang)}\n"
+                    result += f" {phrases.dict('gaveUp', lang)}\n"
                 else:
                     result += f"\n"
         return result
@@ -950,7 +971,7 @@ class EventHandler:
             for i in range(len(steps)):
                 if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
                     unfinished_players += 1
-            
+
             await self._send_step_to_other_players(steps[player_i], lang, names)
             if unstepped_players > 0:
                 result = self._generate_step_result(steps[player_i], lang)
@@ -962,11 +983,11 @@ class EventHandler:
                         result = self._generate_steps_result(steps, i, lang, names)
                         await self.bot.send_message( chat_id=steps[i]['id'], text=result, reply_markup=ReplyKeyboardRemove() )
 
-            if game_response['game_stage'] == 'IN_PROGRESS_WINNER_DEFINED' and steps[player_i]['finished'] and unfinished_players == 0:
-                ok = self._finish_game(message.from_user.id, game_id)
+            if steps[player_i]['finished'] and unfinished_players == 0:
+                ok = await self._finish_game(message.from_user.id, game_id, names)
                 if not ok: False
-
-            if game_response['game_stage'] == 'FINISHED':
+            elif game_response['game_stage'] == 'FINISHED':
+                await self.change_player_state_by_id(message.from_user.id, PlayerStates.main_menu_state)
                 return await self._send_game_results(message.from_user.id, game_id, lang, names)
             else:
                 return False
@@ -980,7 +1001,8 @@ class EventHandler:
             msg = str(e)
             if game_id != 0:
                 error = Error(ErrorLevel.GAME_ERROR, msg)
-                error.game_id = game_id
+                if steps and player_i != -1 and "finished" in steps[player_i] and not steps[player_i]["finished"]:
+                    error.game_id = game_id
                 await self.handle_error(message.from_user.id, error)
             else:
                 error = Error(ErrorLevel.ERROR, msg)
@@ -1015,7 +1037,7 @@ class EventHandler:
             ok = await self._start_game(game_id, player_id)
             if not ok: return False
 
-            await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}", reply_markup=ReplyKeyboardRemove())
+            await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}\n{phrases.dict("giveUpInfo", lang)}", reply_markup=ReplyKeyboardRemove())
             return await self.change_player(message, state, PlayerStates.waiting_for_number)
 
         except asyncio.TimeoutError:
@@ -1057,11 +1079,11 @@ class EventHandler:
             await self.handle_error(message.from_user.id, Error(ErrorLevel.WARNING, msg))
 
         except Exception as e:
-            msg = f"Failed to send feedback for user {player_id}"
+            msg = f"Failed to send feedback for user {player_id}, error - {e}"
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
 
         return False
-        
+
     async def change_lang(self, message: types.Message, state: FSMContext ):
         for lang in phrases.langs():
             if phrases.dict('name', lang) == str(message.text):
@@ -1090,4 +1112,29 @@ class EventHandler:
                 await message.answer(f"{phrases.dict("langChanged", lang)}", reply_markup=kb.main[lang])
                 return await self.change_player(message, state, PlayerStates.main_menu_state)
 
+    async def give_up(self, message: types.Message, state: FSMContext ):
+        try:
+            lang = self.langs[message.from_user.id]
+            player_id = message.from_user.id
 
+            get_current_game_msg = {
+                "command": "get_current_game",
+                "data": player_id,
+            }
+            db_response = await self.kafka.request_to_db(get_current_game_msg, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'id' not in db_response:
+                raise Exception("Invalid get current game response from game service")
+            if 'table' not in db_response or db_response['table'] != 'games':
+                raise Exception("Invalid response from database: wrong table")
+            game_id = db_response['id']
+            return await self._give_up_in_game(player_id, game_id)
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
+
+        except Exception as e:
+            msg = f"Failed to send give up for user {player_id}, error - {e}"
+            await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))

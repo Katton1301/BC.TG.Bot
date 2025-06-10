@@ -41,7 +41,7 @@ async def handle_main_menu(message: types.Message, state: FSMContext):
 
 @router.message(StateFilter(PlayerStates.waiting_for_number))
 async def handle_number_input(message: types.Message, state: FSMContext):
-    await router.controller.state_waiting_for_number(message, state)
+    await router.controller.state_game_step(message, state)
 
 @router.message(StateFilter(PlayerStates.waiting_a_rival))
 async def handle_waiting_a_rival(message: types.Message, state: FSMContext):

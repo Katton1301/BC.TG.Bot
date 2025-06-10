@@ -52,7 +52,10 @@
         "errorTimeout": "Время ожидания сервера истекло. Попробуйте еще раз немного позже",
         "errorMessage": "Что-то пошло не так( Пожалуйста, попробуйте позже",
         "errorGame": "Ошибка в игре. Нам пришлось закрыть игру. Извините за неудобства(",
-        "giveUp": "Сдался!"
+        "giveUpInfo": "Если захотите покинуть игру досрочно, напишите в чат 'сдаться'.",
+        "giveUpCommand": "сдаться",
+        "giveUp": "Сдался!",
+        "waitingTimeout": "Время ожидания истекло. Возврат в меню."
     },
     "en": {
         "name": "English",
@@ -107,6 +110,9 @@
         "errorTimeout": "The server timed out. Please try again later.",
         "errorMessage": "Something went wrong( Please try again later",
         "errorGame": "There was an error in the game. We had to close the game. Sorry for the inconvenience(",
-        "giveUp": "gave up!"
+        "giveUpInfo": "If you want to leave the game early, write 'give up' in the chat.",
+        "giveUpCommand": "give up",
+        "giveUp": "gave up!",
+        "waitingTimeout": "Waiting time expired. Return to menu."
     }
 }

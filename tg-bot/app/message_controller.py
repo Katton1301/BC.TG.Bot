@@ -26,7 +26,7 @@ class MessageController:
         await message.answer(
             phrases.dict("help",lang),
             reply_markup=kb.main[lang])
-        
+
     async def state_main_menu(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
         if phrases.checkPhrase("game", str(message.text)):
@@ -97,10 +97,12 @@ class MessageController:
             await self.eh.start_bot_play(message, state)
         else:
             await message.answer(phrases.dict("chooseMenuItem", lang), reply_markup=kb.game[lang])
-            
-    async def state_waiting_for_number(self, message: types.Message, state: FSMContext):
+
+    async def state_game_step(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
-        if not message.text.isdigit():
+        if phrases.checkPhrase("giveUpCommand", str(message.text).lower()):
+            await self.eh.give_up(message, state)
+        elif not message.text.isdigit():
             await message.answer(phrases.dict("warningNotDigit", lang))
         else:
             await self.eh.do_step(message, state)
