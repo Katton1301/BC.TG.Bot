@@ -29,6 +29,7 @@ class EventHandler:
         self.bot: Bot = bot
         self.dp: Dispatcher = dp
         self.running = False
+        self.server_available = False
         kafka_bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
         kafka_config = {
             "db_listen_topic": os.environ['TOPIC_DB_LISTEN'],
@@ -46,14 +47,83 @@ class EventHandler:
     async def start(self):
         await self.kafka.start()
         self.running = True
+        self.server_check_task = asyncio.create_task(self._check_server_availability())
 
     async def stop(self):
         await self.kafka.stop()
         self.running = False
+        if self.server_check_task:
+            self.server_check_task.cancel()
+            try:
+                await self.server_check_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _check_server_availability(self):
+        while self.running:
+            try:
+                if self.server_available:
+                    if not await self._ping_game_server():
+                        self.server_available = False
+                        logger.error("Game server disconnected")
+                    else:
+                        logger.info("Ping game server successfully")
+                else:
+                    logger.info("Attempting to reconnect to game server...")
+                    if await self.initGameServer():
+                        self.server_available = True
+                        logger.info("Game server reconnected successfully")
+                    else:
+                        logger.warning("Failed to reconnect to game server")
+                await asyncio.sleep(60)
+            except Exception as e:
+                msg = f"Failed to connect to game server: {str(e)}"
+                logger.error(msg)
+                await asyncio.sleep(60)
+        
+
+    async def _ping_game_server(self):
+        try:
+            init_server = {
+                "command": 2,  # SERVER_INFO command
+                "server_id": SERVER_ID,
+            }
+            game_response = await self.kafka.request_to_game(init_server, timeout=5)
+            ok = await self._verify_server_response(game_response)
+            ok = ok and game_response['result'] == 1
+            return ok
+        except Exception as e:
+            msg = f"Failed to ping game server: {str(e)}"
+            logger.error(msg)
+            return False
+
+    async def _verify_server_response(self, response, user_id=None):
+        if response is None or "timeout" in response and response["timeout"]:
+            if self.server_available:
+                logger.error("Game server timeout detected, marking as unavailable")
+                self.server_available = False
+                if user_id:
+                    lang = self.langs.get(user_id, "en")
+                    await self.bot.send_message(
+                        chat_id=user_id,
+                        text=phrases.dict("serverUnavailable", lang)
+                    )
+            return False
+        return True
+
+    async def _handle_server_unavailable(self, user_id):
+        if not self.server_available and user_id:
+            lang = self.langs.get(user_id, "en")
+            await self.bot.send_message(
+                chat_id=user_id,
+                text=phrases.dict("serverUnavailableTryLater", lang),
+                reply_markup=kb.main[lang]
+            )
+        return False
 
     async def handle_error(self, user_id: int, error: Error):
         try:
-            lang = self.langs[user_id]
+            lang = self.langs.get(user_id, "en")
             if error.level == ErrorLevel.INFO:
                 logger.info(error)
             elif error.level == ErrorLevel.WARNING:
@@ -112,6 +182,8 @@ class EventHandler:
                     raise Exception("Invalid response from game service")
 
                 if game_response['result'] != 1:  # SUCCESS code
+                    if game_response['result'] == 4: # SERVER_ALREADY_REGESTERED
+                        return True
                     raise Exception(f"Game service error: {game_response['result']}")
 
                 server_data = {
@@ -219,6 +291,9 @@ class EventHandler:
         return False
 
     async def insert_player(self, message: Any, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         await state.set_state(PlayerStates.main_menu_state)
         self.langs[message.from_user.id] = message.from_user.language_code
         player = {
@@ -233,6 +308,9 @@ class EventHandler:
         return await self._insert_player(player)
 
     async def change_player(self, message: Any, state: FSMContext, new_state: State):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         await state.set_state(new_state)
         if message.from_user.id not in self.langs:
             self.langs[message.from_user.id] = message.from_user.language_code
@@ -338,8 +416,8 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid create game response from game service")
 
@@ -349,7 +427,7 @@ class EventHandler:
             return game_id
 
         except asyncio.TimeoutError:
-            lang = self.langs[player_id]
+            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
@@ -397,8 +475,8 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid start game response from game service")
 
@@ -408,7 +486,7 @@ class EventHandler:
             return True
 
         except asyncio.TimeoutError:
-            lang = self.langs[player_id]
+            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
@@ -452,8 +530,8 @@ class EventHandler:
                 "game_brain": level,
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid add computer response from game service")
 
@@ -463,7 +541,7 @@ class EventHandler:
             return True
 
         except asyncio.TimeoutError:
-            lang = self.langs[player_id]
+            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
@@ -496,8 +574,8 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid start game response from game service")
 
@@ -522,7 +600,7 @@ class EventHandler:
             return True
 
         except asyncio.TimeoutError:
-            lang = self.langs[player_id]
+            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
@@ -534,7 +612,7 @@ class EventHandler:
 
     async def _give_up_in_game(self, player_id, game_id):
         try:
-            lang = self.langs[player_id]
+            lang = self.langs.get(player_id, "en")
             game_msg = {
                 "command": 11,  # Assuming 11 is PLAYER_GIVE_UP command
                 "server_id": SERVER_ID,
@@ -542,8 +620,8 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid give up game response from game service")
 
@@ -637,7 +715,7 @@ class EventHandler:
     
     async def _finish_game(self, player_id, game_id, names):
         try:
-            lang = self.langs[player_id]
+            lang = self.langs.get(player_id, "en")
             game_msg = {
                 "command": 15,  # Assuming 15 is FINISH_GAME command
                 "server_id": SERVER_ID,
@@ -645,8 +723,8 @@ class EventHandler:
                 "game_id": game_id,
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid do step response from game service")
 
@@ -675,8 +753,8 @@ class EventHandler:
                 "game_id": game_id,
                 }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid do step response from game service")
 
@@ -694,7 +772,7 @@ class EventHandler:
                     await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.main[lang] )
 
         except asyncio.TimeoutError:
-            lang = self.langs[player_id]
+            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
@@ -705,12 +783,15 @@ class EventHandler:
             await self.handle_error(player_id, error)
 
     async def start_single_game(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         game_id = await self._create_game(message.from_user.id, "single")
         if game_id == 0: return False
         logger.info(f"Starting single game for user_id: {message.from_user.id}")
         ok = await self._start_game(game_id, message.from_user.id)
         if ok:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(message.from_user.id, "en")
             await message.answer(f"{phrases.dict("gameCreated", lang)} {phrases.dict("yourTurn", lang)}", reply_markup=ReplyKeyboardRemove())
             await self.change_player(message, state, PlayerStates.waiting_for_number)
         else:
@@ -719,6 +800,9 @@ class EventHandler:
 
 
     async def start_random_game(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         player = {
             "player_id": message.from_user.id,
             "firstname": message.from_user.first_name,
@@ -729,7 +813,7 @@ class EventHandler:
             "state": await state.get_state()
         }
         if self.waiting_player is None or self.waiting_player["player_id"] == message.from_user.id:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(message.from_user.id, "en")
             ok = await self.change_player(message, state, PlayerStates.waiting_a_rival)
             if not ok: return False
             player['state'] = await state.get_state()
@@ -779,7 +863,7 @@ class EventHandler:
                 ok = await self.change_player_state_by_id(player['player_id'], PlayerStates.waiting_for_number)
                 if not ok: continue
 
-                lang = self.langs[player['player_id']]
+                lang = self.langs.get(player['player_id'], "en")
                 await self.bot.send_message(
                     chat_id=player['player_id'],
                     text=f"{phrases.dict('gameCreated', lang)}\n{phrases.dict('yourTurn', lang)}",
@@ -857,17 +941,21 @@ class EventHandler:
         return result
 
     async def do_step(self, message: types.Message, state: FSMContext):
+        player_id = message.from_user.id
+        if not self.server_available:
+            await self._handle_server_unavailable(player_id)
+            return False
         game_id = 0
         try:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(player_id, "en")
             if not message.text.isdigit():
                 msg = phrases.dict("invalidNumberFormat", lang)
-                await self.handle_error(message.from_user.id, Error(ErrorLevel.WARNING, msg))
+                await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
                 return False
 
             get_current_game_msg = {
                 "command": "get_current_game",
-                "data": message.from_user.id,
+                "data": player_id,
             }
             db_response = await self.kafka.request_to_db(get_current_game_msg, timeout=5)
             if "timeout" in db_response and db_response["timeout"]:
@@ -882,13 +970,13 @@ class EventHandler:
             game_msg = {
                 "command": 8,  # Assuming 8 is PLAYER_STEP command
                 "server_id": SERVER_ID,
-                "player_id": message.from_user.id,
+                "player_id": player_id,
                 "game_id": game_id,
                 "game_value": game_value,
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if "timeout" in game_response and game_response["timeout"]:
-                raise asyncio.TimeoutError()
+            if not await self._verify_server_response(game_response, player_id):
+                return False
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid do step response from game service")
 
@@ -896,7 +984,7 @@ class EventHandler:
 
                 if game_response['result'] == 13:  # Assuming 13 is INVALID_GAME_VALUE code
                     msg = phrases.dict("errorInvalidGameValue", lang)
-                    await self.handle_error(message.from_user.id, Error(ErrorLevel.WARNING, msg))
+                    await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
                     return False
 
                 raise Exception(f"Game service error: {game_response['result']}")
@@ -908,7 +996,7 @@ class EventHandler:
             player_i = -1
             for i in range(len(steps)):
                 if steps[i]['player']:
-                    if steps[i]['id'] == message.from_user.id:
+                    if steps[i]['id'] == player_id:
                         player_i = i
                     else:
                         continue
@@ -928,7 +1016,7 @@ class EventHandler:
                     "timestamp": str(datetime.now())
                 }
                 await self.kafka.send_to_bd(step_message)
-                logger.info(f"Player {message.from_user.id} do step in game {game_id}")
+                logger.info(f"Player {player_id} do step in game {game_id}")
 
             if player_i == -1:
                 raise Exception(f"Game service not have this player steps")
@@ -946,7 +1034,7 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
             await self.kafka.send_to_bd(update_game_message)
-            logger.info(f"Player {message.from_user.id} do step in game {game_id}")
+            logger.info(f"Player {player_id} do step in game {game_id}")
 
             create_msg = {
                 "command": "get_game_names",
@@ -984,18 +1072,18 @@ class EventHandler:
                         await self.bot.send_message( chat_id=steps[i]['id'], text=result, reply_markup=ReplyKeyboardRemove() )
 
             if steps[player_i]['finished'] and unfinished_players == 0:
-                ok = await self._finish_game(message.from_user.id, game_id, names)
+                ok = await self._finish_game(player_id, game_id, names)
                 if not ok: False
             elif game_response['game_stage'] == 'FINISHED':
-                await self.change_player_state_by_id(message.from_user.id, PlayerStates.main_menu_state)
-                return await self._send_game_results(message.from_user.id, game_id, lang, names)
+                await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+                return await self._send_game_results(player_id, game_id, lang, names)
             else:
                 return False
 
         except asyncio.TimeoutError:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
-            await self.handle_error(message.from_user.id, Error(ErrorLevel.WARNING, msg))
+            await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
 
         except Exception as e:
             msg = str(e)
@@ -1003,20 +1091,23 @@ class EventHandler:
                 error = Error(ErrorLevel.GAME_ERROR, msg)
                 if steps and player_i != -1 and "finished" in steps[player_i] and not steps[player_i]["finished"]:
                     error.game_id = game_id
-                await self.handle_error(message.from_user.id, error)
+                await self.handle_error(player_id, error)
             else:
                 error = Error(ErrorLevel.ERROR, msg)
-                await self.handle_error(message.from_user.id, error)
+                await self.handle_error(player_id, error)
 
         return False
 
     async def start_bot_play( self, message: types.Message, state: FSMContext ):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         player_id = message.from_user.id
         game_id = await self._create_game(player_id, "versus_bot")
         if game_id == 0:
             return False
         try:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(message.from_user.id, "en")
             level = None
             if phrases.checkPhrase("easy", str(message.text)):
                 level = "Easy"
@@ -1041,7 +1132,7 @@ class EventHandler:
             return await self.change_player(message, state, PlayerStates.waiting_for_number)
 
         except asyncio.TimeoutError:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(message.from_user.id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(message.from_user.id, Error(ErrorLevel.WARNING, msg))
 
@@ -1052,6 +1143,9 @@ class EventHandler:
         return False
 
     async def send_feedback(self, message: types.Message, state: FSMContext ):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         username = message.from_user.username
         feedback = message.text
         player_id = message.from_user.id
@@ -1069,12 +1163,12 @@ class EventHandler:
             await self.kafka.send_to_bd(feedback_msg)
             logger.info(f"Player {player_id} send feedback")
 
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(message.from_user.id, "en")
             await message.answer(f"{phrases.dict("feedbackSent", lang)}", reply_markup=kb.main[lang])
             return await self.change_player(message, state, PlayerStates.main_menu_state)
 
         except asyncio.TimeoutError:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(message.from_user.id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self.handle_error(message.from_user.id, Error(ErrorLevel.WARNING, msg))
 
@@ -1085,6 +1179,9 @@ class EventHandler:
         return False
 
     async def change_lang(self, message: types.Message, state: FSMContext ):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         for lang in phrases.langs():
             if phrases.dict('name', lang) == str(message.text):
                 player = {
@@ -1113,8 +1210,11 @@ class EventHandler:
                 return await self.change_player(message, state, PlayerStates.main_menu_state)
 
     async def give_up(self, message: types.Message, state: FSMContext ):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
         try:
-            lang = self.langs[message.from_user.id]
+            lang = self.langs.get(message.from_user.id, "en")
             player_id = message.from_user.id
 
             get_current_game_msg = {

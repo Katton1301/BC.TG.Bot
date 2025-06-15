@@ -12,8 +12,6 @@ async def main():
     dp = Dispatcher()
     eh = EventHandler(bot, dp)
     await eh.start()
-    
-    await eh.initGameServer()
 
     await setup_event_handler(eh)
     dp.include_router(router)

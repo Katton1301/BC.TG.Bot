@@ -55,7 +55,9 @@
         "giveUpInfo": "Если захотите покинуть игру досрочно, напишите в чат 'сдаться'.",
         "giveUpCommand": "сдаться",
         "giveUp": "Сдался!",
-        "waitingTimeout": "Время ожидания истекло. Возврат в меню."
+        "waitingTimeout": "Время ожидания истекло. Возврат в меню.",
+        "serverUnavailable": "⚠️Игровой сервер временно недоступен",
+        "serverUnavailableTryLater": "Извините, игровой сервер в настоящее время недоступен. Пожалуйста, попробуйте позже."
     },
     "en": {
         "name": "English",
@@ -113,6 +115,8 @@
         "giveUpInfo": "If you want to leave the game early, write 'give up' in the chat.",
         "giveUpCommand": "give up",
         "giveUp": "gave up!",
-        "waitingTimeout": "Waiting time expired. Return to menu."
+        "waitingTimeout": "Waiting time expired. Return to menu.",
+        "serverUnavailable": "⚠️Game server is temporarily unavailable",
+        "serverUnavailableTryLater": "Sorry, the game server is currently unavailable. Please try again later."
     }
 }
