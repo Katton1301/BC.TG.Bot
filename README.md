@@ -30,15 +30,19 @@ Before you begin, ensure you have the following installed:
 - Git
 - Telegram account (for testing the bot)
 
-## 1. Create environment files
+## 1. Add Docker secrets 
 
-Create a .env file in the project root with the following content:
+# For Telegram bot token
+echo "your_telegram_bot_token" | docker secret create tg_bot_token -
 
-### Configuration
-TG_API_BC_TOKEN=_your telegram bot token_  
-POSTGRES_USER=_username for admin_  
-POSTGRES_PASSWORD=_your secure password_  
-ADMIN_EMAIL=_your email_  
+# For user name PostgreSQL
+echo "your_username" | docker secret create postgres_user -
+
+# For password PostgreSQL
+echo "your_secure_postgres_password" | docker secret create postgres_password -
+
+# For email
+echo "admin@example.com" | docker secret create admin_email -
 
 ## 2. Build and start the containers
 

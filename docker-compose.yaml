@@ -2,21 +2,44 @@ services:
   zookeeper:
     image: 'confluentinc/cp-zookeeper:7.7.0'
     hostname: zookeeper
-    container_name: zookeeper
+    deploy:
+      replicas: 3
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SERVERS: "zookeeper:2888:3888"
+      ZOOKEEPER_SERVER_ID: "{{.Task.Slot}}"
     ports:
       - '2181:2181'
     networks:
       - kafka-network
-  
+    volumes:
+      - zk_data:/var/lib/zookeeper/data
+      - zk_log:/var/lib/zookeeper/log
+
   kafka:
     image: 'confluentinc/cp-kafka:7.7.0'
     hostname: kafka
-    container_name: kafka
-    depends_on:
-      - zookeeper
+    deploy:
+      replicas: 3
+      placement:
+        constraints: [node.role == worker]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          memory: 512M
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -24,15 +47,23 @@ services:
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:19092
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_CFG_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
       KAFKA_CFG_GROUP_MIN_SESSION_TIMEOUT_MS: 6000
       KAFKA_CFG_GROUP_MAX_SESSION_TIMEOUT_MS: 300000
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     ports:
-      - '9092:9092'
-      - '19092:19092'
+      - '9092-9094:9092'
+      - '19092-19094:19092'
     networks:
       - kafka-network
+    volumes:
+      - kafka_data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list || exit 1"]
       interval: 10s
@@ -41,7 +72,10 @@ services:
 
   kafka-ui:
     image: 'provectuslabs/kafka-ui:v0.7.2'
-    container_name: kafka-ui
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
     ports:
       - '8080:8080'
     environment:
@@ -55,10 +89,22 @@ services:
 
   bc-postgres:
     image: postgres:latest
-    container_name: bc-postgres
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          memory: 512M
+    secrets:
+      - postgres_user
+      - postgres_password
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER_FILE: /run/secrets/postgres_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: bc-postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -68,33 +114,39 @@ services:
       - kafka-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d bc-postgres"]
+      test: ["sh", "-c", "POSTGRES_USER=$$(cat /run/secrets/postgres_user) pg_isready -U $${POSTGRES_USER} -d bc-postgres"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   pgadmin:
     image: dpage/pgadmin4:latest
-    container_name: pgadmin
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+    secrets:
+      - admin_email
+      - postgres_password
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${ADMIN_EMAIL}
-      PGADMIN_DEFAULT_PASSWORD: ${POSTGRES_PASSWORD}
+      PGADMIN_DEFAULT_EMAIL: admin@mail.com
+      PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/postgres_password
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     ports:
       - "5050:80"
     networks:
       - kafka-network
-    restart: unless-stopped
-    depends_on:
-      - bc-postgres
 
   kafka-setup:
     image: confluentinc/cp-kafka:7.7.0
-    container_name: kafka-setup
-    depends_on:
-      kafka:
-        condition: service_healthy
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
     networks:
       - kafka-network
     command: >
@@ -102,10 +154,10 @@ services:
       echo 'Waiting for Kafka to be ready...';
       cub kafka-ready -b kafka:9092 1 30;
       echo 'Creating topics...';
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic bot_game --partitions 3 --replication-factor 1;
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic bot_db --partitions 3 --replication-factor 1;
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic game_bot --partitions 3 --replication-factor 1;
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic db_bot --partitions 3 --replication-factor 1;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic bot_game --partitions 3 --replication-factor 3;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic bot_db --partitions 3 --replication-factor 3;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic game_bot --partitions 3 --replication-factor 3;
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic db_bot --partitions 3 --replication-factor 3;
       echo 'Topics created successfully';
       exit 0;
       "
@@ -116,14 +168,25 @@ services:
       context: https://github.com/Katton1301/BullsAndCows.git#master
       dockerfile: Dockerfile
     image: bc-server:latest
-    container_name: bc-server
     depends_on:
-      kafka-setup:
-        condition: service_completed_successfully
-      kafka:
-        condition: service_healthy
-      bc-postgres:
-        condition: service_healthy
+      - kafka-setup
+      - kafka
+      - bc-postgres
+    deploy:
+      replicas: 3
+      placement:
+        constraints: [node.role == worker]
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     networks:
       - kafka-network
     restart: unless-stopped
@@ -134,6 +197,7 @@ services:
       KAFKA_TOPIC_FROM_SERVER_TO_BOT: game_bot
       KAFKA_TOPIC_FROM_BOT_TO_SERVER: bot_game
       KAFKA_SERVER_GROUP_ID: server_group
+
   db-controller-go:
     build:
       context: db-controller
@@ -143,33 +207,52 @@ services:
       - bc-server
       - kafka
       - bc-postgres
+    deploy:
+      replicas: 3
+      placement:
+        constraints: [node.role == worker]
+      restart_policy:
+        condition: on-failure
     networks:
       - kafka-network
     restart: unless-stopped
+    secrets:
+      - postgres_user
+      - postgres_password
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       POSTGRES_HOST: bc-postgres
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER_FILE: /run/secrets/postgres_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: bc-postgres
+
   tg-bot:
     build:
       context: tg-bot
       dockerfile: Dockerfile
     image: tg-bot:latest
-    container_name: tg-bot
     depends_on:
       - bc-server
       - kafka
       - bc-postgres
+    deploy:
+      replicas: 2
+      placement:
+        constraints: [node.role == worker]
+      restart_policy:
+        condition: on-failure
+    secrets:
+      - postgres_user
+      - postgres_password
+      - tg_bot_token
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       POSTGRES_HOST: bc-postgres
       POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER_FILE: /run/secrets/postgres_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: bc-postgres
-      TG_API_BC_TOKEN: ${TG_API_BC_TOKEN}
+      TG_API_BC_TOKEN_FILE: /run/secrets/tg_bot_token
       TOPIC_DB_LISTEN: db_bot
       TOPIC_DB_SEND: bot_db
       TOPIC_GAME_LISTEN: game_bot
@@ -183,7 +266,24 @@ volumes:
     driver: local
   pgadmin_data:
     driver: local
+  zk_data:
+    driver: local
+  zk_log:
+    driver: local
+  kafka_data:
+    driver: local
 
 networks:
   kafka-network:
-    driver: bridge
+    driver: overlay
+    attachable: true
+
+secrets:
+  postgres_user:
+    external: true
+  postgres_password:
+    external: true
+  admin_email:
+    external: true
+  tg_bot_token:
+    external: true

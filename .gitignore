@@ -1,5 +1,6 @@
 # Environments
 .env
 .venv
+.vagrant
 
 __pycache__/
