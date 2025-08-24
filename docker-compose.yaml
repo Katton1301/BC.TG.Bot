@@ -3,7 +3,7 @@ services:
     image: 'confluentinc/cp-zookeeper:7.7.0'
     hostname: zookeeper
     deploy:
-      replicas: 3
+      replicas: 1
       placement:
         constraints: [node.role == manager]
       restart_policy:
@@ -14,7 +14,7 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
       ZOOKEEPER_SERVERS: "zookeeper:2888:3888"
-      ZOOKEEPER_SERVER_ID: "{{.Task.Slot}}"
+      ZOOKEEPER_SERVER_ID: "1"
     ports:
       - '2181:2181'
     networks:
@@ -25,50 +25,31 @@ services:
 
   kafka:
     image: 'confluentinc/cp-kafka:7.7.0'
-    hostname: kafka
     deploy:
       replicas: 3
       placement:
         constraints: [node.role == worker]
       restart_policy:
         condition: on-failure
-        delay: 10s
-        max_attempts: 5
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          memory: 512M
     environment:
-      KAFKA_BROKER_ID: 1
+      KAFKA_BROKER_ID: -1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_CFG_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
-      KAFKA_CFG_GROUP_MIN_SESSION_TIMEOUT_MS: 6000
-      KAFKA_CFG_GROUP_MAX_SESSION_TIMEOUT_MS: 300000
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-      KAFKA_MIN_INSYNC_REPLICAS: 2
-      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_GENERATE_BROKER_ID: 'true'
+      KAFKA_DELETE_TOPIC_ENABLE: 'true'
       KAFKA_LOG_DIRS: /var/lib/kafka/data
-    ports:
-      - '9092-9094:9092'
-      - '19092-19094:19092'
-    networks:
-      - kafka-network
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
     volumes:
       - kafka_data:/var/lib/kafka/data
-    healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
+    networks:
+      - kafka-network
 
   kafka-ui:
     image: 'provectuslabs/kafka-ui:v0.7.2'
@@ -164,9 +145,6 @@ services:
     restart: on-failure
 
   bc-server:
-    build:
-      context: https://github.com/Katton1301/BullsAndCows.git#master
-      dockerfile: Dockerfile
     image: bc-server:latest
     depends_on:
       - kafka-setup
@@ -199,9 +177,6 @@ services:
       KAFKA_SERVER_GROUP_ID: server_group
 
   db-controller-go:
-    build:
-      context: db-controller
-      dockerfile: Dockerfile
     image: db-controller:latest
     depends_on:
       - bc-server
@@ -213,6 +188,8 @@ services:
         constraints: [node.role == worker]
       restart_policy:
         condition: on-failure
+        delay: 10s
+        max_attempts: 10
     networks:
       - kafka-network
     restart: unless-stopped
@@ -225,11 +202,16 @@ services:
       POSTGRES_USER_FILE: /run/secrets/postgres_user
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: bc-postgres
+      WAIT_FOR_HOST: bc-postgres
+      WAIT_FOR_PORT: 5432
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "bc-postgres", "-U", "$$(cat /run/secrets/postgres_user)", "-d", "bc-postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   tg-bot:
-    build:
-      context: tg-bot
-      dockerfile: Dockerfile
     image: tg-bot:latest
     depends_on:
       - bc-server
