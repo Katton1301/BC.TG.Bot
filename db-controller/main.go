@@ -8,6 +8,7 @@ import (
   "math/rand"
   "os"
   "time"
+  "strings"
 
   "github.com/confluentinc/confluent-kafka-go/v2/kafka"
   "github.com/jackc/pgx/v5"
@@ -114,233 +115,244 @@ func loadComputerNames() error {
     return nil
 }
 
+func readSecret(filePath string) (string, error) {
+    data, err := os.ReadFile(filePath)
+    if err != nil {
+        return "", err
+    }
+    return strings.TrimSpace(string(data)), nil
+}
+
 var producer *kafka.Producer
 
 func main() {
- conn, err := pgx.Connect(context.Background(),
-  "postgres://"+os.Getenv("POSTGRES_USER")+":"+os.Getenv("POSTGRES_PASSWORD")+
-   "@"+os.Getenv("POSTGRES_HOST")+":5432/"+os.Getenv("POSTGRES_DB"))
- if err != nil {
-  log.Fatalf("Postgres connection failed: %v", err)
- }
- defer conn.Close(context.Background())
-
- producer, err = kafka.NewProducer(&kafka.ConfigMap{
-  "bootstrap.servers": os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
- })
- if err != nil {
-  log.Fatalf("Failed to create producer: %v", err)
- }
- defer producer.Close()
-
- go func() {
-  for e := range producer.Events() {
-   switch ev := e.(type) {
-   case *kafka.Message:
-    if ev.TopicPartition.Error != nil {
-     log.Printf("Delivery failed: %v\n", ev.TopicPartition.Error)
-    }
-   }
-  }
- }()
-
- if err := loadComputerNames(); err != nil {
-  log.Fatalf("failed to load computer names: %w", err)
- }
-
- err = checkAndCreateTables(conn)
- if err != nil {
-  log.Fatalf("Failed to initialize tables: %v", err)
- }
-
- config := &kafka.ConfigMap{
-  "bootstrap.servers": os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
-  "group.id":          "go-kafka-group",
-    "auto.offset.reset":   "latest",
-    "enable.auto.commit":  "false",
-    "session.timeout.ms":  6000,
-    "heartbeat.interval.ms": 2000,
-    "max.poll.interval.ms": 300000,
- }
-
- consumer, err := kafka.NewConsumer(config)
- if err != nil {
-  log.Fatalf("Failed to create consumer: %v", err)
- }
- defer consumer.Close()
- consumer_topic := "bot_db"
- err = consumer.SubscribeTopics([]string{consumer_topic}, nil)
- if err != nil {
-  log.Fatalf("Failed to subscribe: %v", err)
- }
-
- log.Println("Consumer started. Waiting for messages...")
-
- for {
-  msg, err := consumer.ReadMessage(10 * time.Second)
-  if err != nil {
-   if err.(kafka.Error).Code() == kafka.ErrTimedOut {
-    continue
-   }
-   log.Printf("Consumer error: %v", err)
-   continue
-  }
-
-  var kafkaMsg KafkaMessage
-  if err := json.Unmarshal(msg.Value, &kafkaMsg); err != nil {
-   log.Printf("Failed to decode message: %v", err)
-   continue
-  }
-
-  switch kafkaMsg.Command {
-  case "insert_player":
-   var player PlayerData
-   if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
-    log.Printf("Failed to parse player data: %v", err)
-    continue
-   }
-   err = handleInsertPlayer(conn, player)
-   if err != nil {
-    log.Printf("Failed to insert player: %v", err)
-   }
-  case "change_player":
-   var player PlayerData
-   if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
-    log.Printf("Failed to parse player data: %v", err)
-    continue
-   }
-   err = handleUpdatePlayer(conn, player)
-   if err != nil {
-    log.Printf("Failed to insert player: %v", err)
-   }
-
-  case "update_lang_player":
-   var player PlayerData
-   if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
-    log.Printf("Failed to parse player data: %v", err)
-    continue
-   }
-   err = handleUpdateLangPlayer(conn, player)
-   if err != nil {
-    log.Printf("Failed to update lang player: %v", err)
-   }
-
-  case "create_game":
-   var game GameData
-   if err := json.Unmarshal(kafkaMsg.Data, &game); err != nil {
-    log.Printf("Failed to parse game data: %v", err)
-    continue
-   }
-   err = handleCreateGame(conn, kafkaMsg.CorrelationId, game)
-   if err != nil {
-    log.Printf("Failed to create game: %v", err)
-   }
-
-  case "update_game":
-   var game GameData
-   if err := json.Unmarshal(kafkaMsg.Data, &game); err != nil {
-    log.Printf("Failed to parse game data: %v", err)
-    continue
-   }
-   err = handleUpdateGame(conn, game)
-   if err != nil {
-    log.Printf("Failed to update game: %v", err)
-   }
-
-  case "create_computer":
-    var computer ComputerGameData
-    if err := json.Unmarshal(kafkaMsg.Data, &computer); err != nil {
-     log.Printf("Failed to parse computer data: %v", err)
-     continue
-    }
-    err = handleCreateComputer(conn, kafkaMsg.CorrelationId, computer)
+    user, _ := readSecret(os.Getenv("POSTGRES_USER_FILE"))
+    password, _ := readSecret(os.Getenv("POSTGRES_PASSWORD_FILE"))
+    conn, err := pgx.Connect(
+        context.Background(),
+        "postgres://"+user+":"+password+
+        "@"+os.Getenv("POSTGRES_HOST")+":5432/"+os.Getenv("POSTGRES_DB"))
     if err != nil {
-     log.Printf("Failed to create computer: %v", err)
-  }
-
-  case "add_player_game":
-   var playerGame PlayerGameData
-   if err := json.Unmarshal(kafkaMsg.Data, &playerGame); err != nil {
-    log.Printf("Failed to parse player game data: %v", err)
-    continue
-   }
-   err = handleAddPlayerGame(conn, playerGame)
-   if err != nil {
-    log.Printf("Failed to add player game: %v", err)
-   }
-
-  case "feedback":
-   var feedback FeedBackData
-   if err := json.Unmarshal(kafkaMsg.Data, &feedback); err != nil {
-    log.Printf("Failed to parse feedback data: %v", err)
-    continue
-   }
-   err = handleFeedback(conn, feedback)
-   if err != nil {
-    log.Printf("Failed to add feedback: %v", err)
-   }
-
-  case "get_current_game":
-   var player_id int64
-   if err := json.Unmarshal(kafkaMsg.Data, &player_id); err != nil {
-    log.Printf("Failed to parse player id: %v", err)
-    continue
-   }
-   err = handleGetCurrentGame(conn, kafkaMsg.CorrelationId, player_id)
-   if err != nil {
-    log.Printf("Failed to get current game: %v", err)
-   }
-
-  case "set_current_game":
-   var playerGame PlayerGameData
-   if err := json.Unmarshal(kafkaMsg.Data, &playerGame); err != nil {
-    log.Printf("Failed to parse player game data: %v", err)
-    continue
-   }
-   err = handleSetCurrentGame(conn, playerGame)
-   if err != nil {
-    log.Printf("Failed to set current game: %v", err)
-   }
-
-  case "get_server_games":
-   var server_id int64
-   if err := json.Unmarshal(kafkaMsg.Data, &server_id); err != nil {
-    log.Printf("Failed to parse server id: %v", err)
-    continue
-   }
-   err = handleGetServerGames(conn, kafkaMsg.CorrelationId, server_id)
-   if err != nil {
-    log.Printf("Failed to send server games: %v", err)
-   }
-
-  case "add_step":
-    var step GamesHistoryData
-    if err := json.Unmarshal(kafkaMsg.Data, &step); err != nil {
-     log.Printf("Failed to parse game step data: %v", err)
-     continue
+        log.Fatalf("Postgres connection failed: %v", err)
     }
-    err = handleInsertStep(conn, step)
+    defer conn.Close(context.Background())
+
+    producer, err = kafka.NewProducer(&kafka.ConfigMap{
+        "bootstrap.servers": os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
+    })
     if err != nil {
-     log.Printf("Failed to insert step: %v", err)
+        log.Fatalf("Failed to create producer: %v", err)
+    }
+    defer producer.Close()
+
+    go func() {
+        for e := range producer.Events() {
+            switch ev := e.(type) {
+                case *kafka.Message:
+                    if ev.TopicPartition.Error != nil {
+                        log.Printf("Delivery failed: %v\n", ev.TopicPartition.Error)
+                    }
+            }
+        }
+    }()
+
+    if err := loadComputerNames(); err != nil {
+        log.Fatalf("failed to load computer names: %w", err)
     }
 
-  case "get_game_names":
-    var gameId int64
-    if err := json.Unmarshal(kafkaMsg.Data, &gameId); err != nil {
-        log.Printf("Failed to parse game id: %v", err)
-        continue
-    }
-    err = handleGetGameNames(conn, kafkaMsg.CorrelationId, gameId)
+    err = checkAndCreateTables(conn)
     if err != nil {
-        log.Printf("Failed to get game names: %v", err)
+        log.Fatalf("Failed to initialize tables: %v", err)
     }
+
+    config := &kafka.ConfigMap{
+        "bootstrap.servers": os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
+        "group.id":          "go-kafka-group",
+        "auto.offset.reset":   "latest",
+        "enable.auto.commit":  "false",
+        "session.timeout.ms":  6000,
+        "heartbeat.interval.ms": 2000,
+        "max.poll.interval.ms": 300000,
+    }
+
+    consumer, err := kafka.NewConsumer(config)
+    if err != nil {
+        log.Fatalf("Failed to create consumer: %v", err)
+    }
+    defer consumer.Close()
+    consumer_topic := "bot_db"
+    err = consumer.SubscribeTopics([]string{consumer_topic}, nil)
+    if err != nil {
+        log.Fatalf("Failed to subscribe: %v", err)
+    }
+
+    log.Println("Consumer started. Waiting for messages...")
+
+    for {
+        msg, err := consumer.ReadMessage(10 * time.Second)
+        if err != nil {
+            if err.(kafka.Error).Code() == kafka.ErrTimedOut {
+                continue
+            }
+            log.Printf("Consumer error: %v", err)
+            continue
+        }
+
+        var kafkaMsg KafkaMessage
+        if err := json.Unmarshal(msg.Value, &kafkaMsg); err != nil {
+            log.Printf("Failed to decode message: %v", err)
+            continue
+        }
+
+        switch kafkaMsg.Command {
+            case "insert_player":
+                var player PlayerData
+                if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
+                    log.Printf("Failed to parse player data: %v", err)
+                    continue
+                }
+                err = handleInsertPlayer(conn, player)
+                if err != nil {
+                    log.Printf("Failed to insert player: %v", err)
+                }
+            case "change_player":
+                var player PlayerData
+                if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
+                    log.Printf("Failed to parse player data: %v", err)
+                    continue
+                }
+                err = handleUpdatePlayer(conn, player)
+                if err != nil {
+                    log.Printf("Failed to insert player: %v", err)
+                }
+
+            case "update_lang_player":
+                var player PlayerData
+                if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
+                    log.Printf("Failed to parse player data: %v", err)
+                    continue
+                }
+                err = handleUpdateLangPlayer(conn, player)
+                if err != nil {
+                    log.Printf("Failed to update lang player: %v", err)
+                }
+                
+            case "create_game":
+                var game GameData
+                if err := json.Unmarshal(kafkaMsg.Data, &game); err != nil {
+                    log.Printf("Failed to parse game data: %v", err)
+                    continue
+                }
+                err = handleCreateGame(conn, kafkaMsg.CorrelationId, game)
+                if err != nil {
+                    log.Printf("Failed to create game: %v", err)
+                }
+
+            case "update_game":
+                var game GameData
+                if err := json.Unmarshal(kafkaMsg.Data, &game); err != nil {
+                    log.Printf("Failed to parse game data: %v", err)
+                    continue
+                }
+                err = handleUpdateGame(conn, game)
+                if err != nil {
+                    log.Printf("Failed to update game: %v", err)
+                }
+
+            case "create_computer":
+                var computer ComputerGameData
+                if err := json.Unmarshal(kafkaMsg.Data, &computer); err != nil {
+                    log.Printf("Failed to parse computer data: %v", err)
+                    continue
+                }
+                err = handleCreateComputer(conn, kafkaMsg.CorrelationId, computer)
+                if err != nil {
+                    log.Printf("Failed to create computer: %v", err)
+                }
+
+            case "add_player_game":
+                var playerGame PlayerGameData
+                if err := json.Unmarshal(kafkaMsg.Data, &playerGame); err != nil {
+                    log.Printf("Failed to parse player game data: %v", err)
+                    continue
+                }
+                err = handleAddPlayerGame(conn, playerGame)
+                if err != nil {
+                    log.Printf("Failed to add player game: %v", err)
+                }
+
+            case "feedback":
+                var feedback FeedBackData
+                if err := json.Unmarshal(kafkaMsg.Data, &feedback); err != nil {
+                    log.Printf("Failed to parse feedback data: %v", err)
+                    continue
+                }
+                err = handleFeedback(conn, feedback)
+                if err != nil {
+                    log.Printf("Failed to add feedback: %v", err)
+                }
+
+            case "get_current_game":
+                var player_id int64
+                if err := json.Unmarshal(kafkaMsg.Data, &player_id); err != nil {
+                    log.Printf("Failed to parse player id: %v", err)
+                    continue
+                }
+                err = handleGetCurrentGame(conn, kafkaMsg.CorrelationId, player_id)
+                if err != nil {
+                    log.Printf("Failed to get current game: %v", err)
+                }
+
+            case "set_current_game":
+                var playerGame PlayerGameData
+                if err := json.Unmarshal(kafkaMsg.Data, &playerGame); err != nil {
+                    log.Printf("Failed to parse player game data: %v", err)
+                    continue
+                }
+                err = handleSetCurrentGame(conn, playerGame)
+                if err != nil {
+                    log.Printf("Failed to set current game: %v", err)
+                }
+                
+            case "get_server_games":
+                var server_id int64
+                if err := json.Unmarshal(kafkaMsg.Data, &server_id); err != nil {
+                    log.Printf("Failed to parse server id: %v", err)
+                    continue
+                }
+                err = handleGetServerGames(conn, kafkaMsg.CorrelationId, server_id)
+                if err != nil {
+                    log.Printf("Failed to send server games: %v", err)
+                }
+
+            case "add_step":
+                var step GamesHistoryData
+                if err := json.Unmarshal(kafkaMsg.Data, &step); err != nil {
+                    log.Printf("Failed to parse game step data: %v", err)
+                    continue
+                }
+                err = handleInsertStep(conn, step)
+                if err != nil {
+                    log.Printf("Failed to insert step: %v", err)
+                }
+
+            case "get_game_names":
+                var gameId int64
+                if err := json.Unmarshal(kafkaMsg.Data, &gameId); err != nil {
+                    log.Printf("Failed to parse game id: %v", err)
+                    continue
+                }
+                err = handleGetGameNames(conn, kafkaMsg.CorrelationId, gameId)
+                if err != nil {
+                    log.Printf("Failed to get game names: %v", err)
+                }
 
   // another commands
 
-  default:
-   log.Printf("Unknown command: %s", kafkaMsg.Command)
-  }
- }
+            default:
+                log.Printf("Unknown command: %s", kafkaMsg.Command)
+        }
+    }
 }
 
 func handleInsertPlayer(conn *pgx.Conn, player PlayerData) error {
