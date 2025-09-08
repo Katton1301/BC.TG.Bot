@@ -731,6 +731,22 @@ class EventHandler:
             if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                 raise Exception(f"Game service error: {game_response['result']}")
             
+            max_step = max(step['step'] for step in game_response['steps'])
+            update_game_message = {
+                "command": "update_game",
+                "data": {
+                    "id": game_id,
+                    "server_id": SERVER_ID,
+                    "stage": game_response["game_stage"],
+                    "step": max_step,
+                    "secret_value": 0,
+                    "mode": "unchangeable",
+                },
+                "timestamp": str(datetime.now())
+            }
+            await self.kafka.send_to_bd(update_game_message)
+            logger.info(f"Game {game_id} force finish")
+            
             await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
             return await self._send_game_results(player_id, game_id, lang, names)
 
