@@ -120,6 +120,9 @@ class MessageController:
     async def state_feedback(self, message: types.Message, state: FSMContext):
         await self.eh.send_feedback(message, state)
 
+    async def callback_full_game(self, callback: types.CallbackQuery):
+        await callback.message.answer("Full Game")
+
     async def state_waiting_a_rival(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
         await message.answer(phrases.dict("rivalStillWaiting", lang))

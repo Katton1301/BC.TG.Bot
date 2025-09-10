@@ -57,7 +57,8 @@
         "giveUp": "Сдался!",
         "waitingTimeout": "Время ожидания истекло. Возврат в меню.",
         "serverUnavailable": "⚠️Игровой сервер временно недоступен",
-        "serverUnavailableTryLater": "Извините, игровой сервер в настоящее время недоступен. Пожалуйста, попробуйте позже."
+        "serverUnavailableTryLater": "Извините, игровой сервер в настоящее время недоступен. Пожалуйста, попробуйте позже.",
+        "fullGame": "Полная игра"
     },
     "en": {
         "name": "English",
@@ -117,6 +118,7 @@
         "giveUp": "gave up!",
         "waitingTimeout": "Waiting time expired. Return to menu.",
         "serverUnavailable": "⚠️Game server is temporarily unavailable",
-        "serverUnavailableTryLater": "Sorry, the game server is currently unavailable. Please try again later."
+        "serverUnavailableTryLater": "Sorry, the game server is currently unavailable. Please try again later.",
+        "fullGame": "Full game"
     }
 }

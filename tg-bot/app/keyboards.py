@@ -6,6 +6,7 @@ main = dict()
 game = dict()
 bot = dict()
 lang = dict()
+full_game = dict()
 
 def create_keyboards():
     for _lang in phrases.langs():
@@ -38,6 +39,12 @@ def create_keyboards():
             ],
             resize_keyboard=True,
             one_time_keyboard=True
+        )
+
+        full_game[_lang] = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text=phrases.dict('fullGame', _lang), callback_data="full_game"),
+            ]]
         )
     
         keyboard_langs = []

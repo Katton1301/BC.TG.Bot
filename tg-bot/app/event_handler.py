@@ -790,7 +790,7 @@ class EventHandler:
             for i in range(len(game_result)):
                 if game_result[i]['player']:
                     result = self._generate_game_results(game_result, i, lang, names)
-                    await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.main[lang] )
+                    await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.full_game[lang] )
 
         except asyncio.TimeoutError:
             lang = self.langs.get(player_id, "en")

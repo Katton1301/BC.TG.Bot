@@ -16,6 +16,7 @@ async def setup_event_handler(eh):
     router.message.register(handle_waiting_a_rival, StateFilter(PlayerStates.waiting_a_rival))
     router.message.register(handle_lang, StateFilter(PlayerStates.lang_state))
     router.message.register(handle_feedback, StateFilter(PlayerStates.feedback_state))
+    router.message.register(handle_full_game, F.data == "full_game")
     router.message.register(unhandled_message)
     router.controller = MessageController(eh)
 
@@ -54,6 +55,10 @@ async def handle_lang(message: types.Message, state: FSMContext):
 @router.message(StateFilter(PlayerStates.feedback_state))
 async def handle_feedback(message: types.Message, state: FSMContext):
     await router.controller.state_feedback(message, state)
+
+@router.callback_query(F.data == "full_game")
+async def handle_full_game(callback: types.CallbackQuery):
+    await router.controller.callback_full_game(callback)
 
 @router.message()
 async def unhandled_message(message: types.Message, state: FSMContext):
