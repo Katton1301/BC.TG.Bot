@@ -171,6 +171,8 @@ class EventHandler:
         retries = 0
         while retries < MAX_RETRIES:
             try:
+                
+                server_up = False
                 init_server = {
                     "command": 1,  # INIT_GAME command
                     "server_id": SERVER_ID,
@@ -180,11 +182,11 @@ class EventHandler:
                     raise asyncio.TimeoutError()
                 if not game_response or 'result' not in game_response:
                     raise Exception("Invalid response from game service")
-
                 if game_response['result'] != 1:  # SUCCESS code
                     if game_response['result'] == 4: # SERVER_ALREADY_REGESTERED
-                        return True
-                    raise Exception(f"Game service error: {game_response['result']}")
+                        server_up = True
+                    else:
+                        raise Exception(f"Game service error: {game_response['result']}")
 
                 server_data = {
                     "command": "get_server_games",
@@ -199,19 +201,7 @@ class EventHandler:
                 required_fields = ['games', 'players', 'player_games', 'computer_games', 'history']
                 for field in required_fields:
                     if field not in db_response:
-                        raise Exception(f"Invalid response from database: missing {field}")
-
-                games = []
-                for game in db_response['games']:
-                    game_dict = {
-                        "command": 18,  # RESTORE_GAME command
-                        "server_id": SERVER_ID,
-                        "game_id": game['id'],
-                        "game_value": game['secret_value'],
-                        "restore_data": [],
-                        "players": [],
-                    }
-                    games.append(game_dict)
+                        raise Exception(f"Invalid response from database: missing {field}")  
 
                 for player in db_response['players']:
                     user_id = player['player_id']
@@ -224,6 +214,21 @@ class EventHandler:
                     if await state.get_state() == PlayerStates.waiting_a_rival:
                         self.waiting_player = player
                     logger.info(f"restore user - {user_id} state - {await state.get_state()}")
+
+                if server_up:
+                    return True
+                    
+                games = []
+                for game in db_response['games']:
+                    game_dict = {
+                        "command": 18,  # RESTORE_GAME command
+                        "server_id": SERVER_ID,
+                        "game_id": game['id'],
+                        "game_value": game['secret_value'],
+                        "restore_data": [],
+                        "players": [],
+                    }
+                    games.append(game_dict)
 
                 for player_game in db_response['player_games']:
                     for game in games:
@@ -342,7 +347,7 @@ class EventHandler:
             "timestamp": str(datetime.now())
         }
         try:
-            await self.kafka.send_to_bd(player_data)
+            await self.kafka.send_to_db(player_data)
 
             logger.info(f"Successfully sent player insert for user_id: {player['player_id']}")
             return True
@@ -358,7 +363,7 @@ class EventHandler:
             "timestamp": str(datetime.now())
         }
         try:
-            await self.kafka.send_to_bd(player_data)
+            await self.kafka.send_to_db(player_data)
             logger.info(f"Successfully sent player update for user_id: {player['player_id']}")
             return True
         except Exception as e:
@@ -406,7 +411,7 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            await self.kafka.send_to_bd(player_msg)
+            await self.kafka.send_to_db(player_msg)
             logger.info(f"Player {player_id} added to game {game_id}")
 
             game_msg = {
@@ -451,7 +456,7 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            await self.kafka.send_to_bd(player_msg)
+            await self.kafka.send_to_db(player_msg)
             logger.info(f"Player {player_id} added to game {game_id}")
 
             set_current_game = {
@@ -465,7 +470,7 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            await self.kafka.send_to_bd(set_current_game)
+            await self.kafka.send_to_db(set_current_game)
             logger.info(f"Player {player_id} set current game {game_id}")
 
             game_msg = {
@@ -564,7 +569,7 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            await self.kafka.send_to_bd(set_current_game)
+            await self.kafka.send_to_db(set_current_game)
             logger.info(f"Player {player_id} set current game {game_id}")
 
             game_msg = {
@@ -594,7 +599,7 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            await self.kafka.send_to_bd(start_game_message)
+            await self.kafka.send_to_db(start_game_message)
             logger.info(f"Game {game_id} fully initialized")
 
             return True
@@ -657,7 +662,7 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            await self.kafka.send_to_bd(step_message)
+            await self.kafka.send_to_db(step_message)
             logger.info(f"Player {player_id} do step in game {game_id}")
 
             if game_response["game_stage"] != "IN_PROGRESS":
@@ -673,7 +678,7 @@ class EventHandler:
                     },
                     "timestamp": str(datetime.now())
                 }
-                await self.kafka.send_to_bd(update_game_message)
+                await self.kafka.send_to_db(update_game_message)
                 logger.info(f"Player {player_id} give up in game {game_id}")
 
             create_msg = {
@@ -744,7 +749,7 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            await self.kafka.send_to_bd(update_game_message)
+            await self.kafka.send_to_db(update_game_message)
             logger.info(f"Game {game_id} force finish")
             
             await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
@@ -1031,7 +1036,7 @@ class EventHandler:
                     },
                     "timestamp": str(datetime.now())
                 }
-                await self.kafka.send_to_bd(step_message)
+                await self.kafka.send_to_db(step_message)
                 logger.info(f"Player {player_id} do step in game {game_id}")
 
             if player_i == -1:
@@ -1049,7 +1054,7 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            await self.kafka.send_to_bd(update_game_message)
+            await self.kafka.send_to_db(update_game_message)
             logger.info(f"Player {player_id} do step in game {game_id}")
 
             create_msg = {
@@ -1176,7 +1181,7 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            await self.kafka.send_to_bd(feedback_msg)
+            await self.kafka.send_to_db(feedback_msg)
             logger.info(f"Player {player_id} send feedback")
 
             lang = self.langs.get(message.from_user.id, "en")
@@ -1215,7 +1220,7 @@ class EventHandler:
                     "timestamp": str(datetime.now())
                 }
                 try:
-                    await self.kafka.send_to_bd(player_data)
+                    await self.kafka.send_to_db(player_data)
                     logger.info(f"Successfully sent player update lang for user_id: {player['player_id']}")
                 except Exception as e:
                     msg = f"Failed to send player data to Kafka: {str(e)}"

@@ -76,7 +76,7 @@ class KafkaHandler:
         except Exception as e:
             logger.error(f"Consumer error: {e}")
 
-    async def send_to_bd(self, message: Dict[str, Any]) -> str:
+    async def send_to_db(self, message: Dict[str, Any]) -> str:
         await self.send(message, self.db_send_topic)
 
     async def send_to_game(self, message: Dict[str, Any]) -> str:
