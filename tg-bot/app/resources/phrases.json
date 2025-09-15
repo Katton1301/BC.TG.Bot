@@ -27,6 +27,7 @@
         "youWon": "Вы выиграли!",
         "yourPlace": "Ваше место",
         "gameFinished": "Игра закончена!",
+        "gameNotFinished": "Игра не окончена!",
         "you": "Вы",
         "player": "Игрок",
         "bot": "Бот",
@@ -58,7 +59,9 @@
         "waitingTimeout": "Время ожидания истекло. Возврат в меню.",
         "serverUnavailable": "⚠️Игровой сервер временно недоступен",
         "serverUnavailableTryLater": "Извините, игровой сервер в настоящее время недоступен. Пожалуйста, попробуйте позже.",
-        "fullGame": "Полная игра"
+        "fullGame": "Полная игра",
+        "toMenu": "В меню",
+        "noGameSteps": "В игре не было ходов"
     },
     "en": {
         "name": "English",
@@ -88,6 +91,7 @@
         "youWon": "You won!",
         "yourPlace": "Your place",
         "gameFinished": "Game finished!",
+        "gameNotFinished": "Game not finished!",
         "you": "You",
         "player": "Player",
         "bot": "Bot",
@@ -119,6 +123,8 @@
         "waitingTimeout": "Waiting time expired. Return to menu.",
         "serverUnavailable": "⚠️Game server is temporarily unavailable",
         "serverUnavailableTryLater": "Sorry, the game server is currently unavailable. Please try again later.",
-        "fullGame": "Full game"
+        "fullGame": "Full game",
+        "toMenu": "To menu",
+        "noGameSteps": "There were no steps in the game"
     }
 }

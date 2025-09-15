@@ -62,6 +62,7 @@ type GamesHistoryData struct {
   Cows int `json:"cows"`
   IsComputer bool `json:"is_computer"`
   IsGiveUp bool `json:"is_give_up"`
+  Timestamp time.Time `json:"timestamp"`
 }
 
 type FeedBackData struct {
@@ -86,6 +87,12 @@ type IDResponse struct {
   ID    int64 `json:"id"`
 }
 
+type CurrentGameResponse struct {
+    CorrelationId string `json:"correlation_id"`
+    ID            int64  `json:"id"`
+    Finished      bool   `json:"finished"`
+}
+
 type RestoreGamesData struct {
     CorrelationId string             `json:"correlation_id"`
     Games         []GameData         `json:"games"`
@@ -95,10 +102,41 @@ type RestoreGamesData struct {
     History       []GamesHistoryData `json:"history"`
 }
 
+type GameReportResponse struct {
+    CorrelationId string             `json:"correlation_id"`
+    GameId        int64              `json:"game_id"`
+    Steps         []GamesHistoryData `json:"steps"`
+}
+
 type KafkaMessage struct {
   Command string          `json:"command"`
   CorrelationId string      `json:"correlation_id"`
   Data    json.RawMessage `json:"data"`
+}
+
+func (g *GamesHistoryData) UnmarshalJSON(data []byte) error {
+    type Alias GamesHistoryData
+    aux := &struct {
+        Timestamp string `json:"timestamp"`
+        *Alias
+    }{
+        Alias: (*Alias)(g),
+    }
+    
+    if err := json.Unmarshal(data, &aux); err != nil {
+        return err
+    }
+    
+    parsedTime, err := time.Parse(time.RFC3339Nano, aux.Timestamp)
+    if err != nil {
+        parsedTime, err = time.Parse("2006-01-02T15:04:05", aux.Timestamp)
+        if err != nil {
+            return err
+        }
+    }
+    
+    g.Timestamp = parsedTime
+    return nil
 }
 
 func loadComputerNames() error {
@@ -236,7 +274,7 @@ func main() {
                 if err != nil {
                     log.Printf("Failed to update lang player: %v", err)
                 }
-                
+
             case "create_game":
                 var game GameData
                 if err := json.Unmarshal(kafkaMsg.Data, &game); err != nil {
@@ -313,7 +351,18 @@ func main() {
                 if err != nil {
                     log.Printf("Failed to set current game: %v", err)
                 }
-                
+
+            case "get_game_report":
+                var game_id int64
+                if err := json.Unmarshal(kafkaMsg.Data, &game_id); err != nil {
+                    log.Printf("Failed to parse game id: %v", err)
+                    continue
+                }
+                err = handleGetGameReport(conn, kafkaMsg.CorrelationId, game_id)
+                if err != nil {
+                    log.Printf("Failed to get game report: %v", err)
+                }
+
             case "get_server_games":
                 var server_id int64
                 if err := json.Unmarshal(kafkaMsg.Data, &server_id); err != nil {
@@ -360,7 +409,7 @@ func handleInsertPlayer(conn *pgx.Conn, player PlayerData) error {
         `INSERT INTO players(id, firstname, lastname, fullname, username, lang, state)
         VALUES($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (id) DO NOTHING`,
-        player.Id, player.FirstName, player.LastName, player.FullName, 
+        player.Id, player.FirstName, player.LastName, player.FullName,
         player.UserName, player.Lang, player.State)
 
     if err != nil {
@@ -375,7 +424,7 @@ func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
     query := "UPDATE players SET"
     args := make([]interface{}, 0)
     argCounter := 1
-    
+
     if player.FirstName != "" {
         query += fmt.Sprintf(" firstname = $%d,", argCounter)
         args = append(args, player.FirstName)
@@ -401,17 +450,17 @@ func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
         args = append(args, player.State)
         argCounter++
     }
-    
+
     if len(args) > 0 {
         query = query[:len(query)-1]
     } else {
         log.Printf("No fields to update for player with id %d", player.Id)
         return nil
     }
-    
+
     query += fmt.Sprintf(" WHERE id = $%d", argCounter)
     args = append(args, player.Id)
-    
+
     cmdTag, err := conn.Exec(context.Background(), query, args...)
     if err != nil {
         return fmt.Errorf("failed to update player: %w", err)
@@ -599,29 +648,36 @@ func handleFeedback(conn *pgx.Conn, feedback FeedBackData) error {
 
 func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64) error {
     var gameID int64
+    var stage string
+    var finished bool
 
     err := conn.QueryRow(context.Background(),
-        `SELECT game_id FROM player_games
-         WHERE player_id = $1 AND is_current_game = true`,
-        player_id).Scan(&gameID)
+        `SELECT g.id, g.stage 
+         FROM games g
+         JOIN player_games pg ON g.id = pg.game_id
+         WHERE pg.player_id = $1 AND pg.is_current_game = true`,
+        player_id).Scan(&gameID, &stage)
 
     if err != nil {
         if err == pgx.ErrNoRows {
             gameID = 0
+            finished = false
         } else {
             return fmt.Errorf("failed to query current game: %w", err)
         }
+    } else {
+        finished = (stage == "FINISHED")
     }
 
-    response := IDResponse{
+    response := CurrentGameResponse{
         CorrelationId: correlation_id,
-        Table:         "games",
         ID:            gameID,
+        Finished:      finished,
     }
 
     responseBytes, err := json.Marshal(response)
     if err != nil {
-        return fmt.Errorf("failed to marshal ID response: %w", err)
+        return fmt.Errorf("failed to marshal response: %w", err)
     }
 
     producer_topic := "db_bot"
@@ -631,10 +687,10 @@ func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64
     }, nil)
 
     if err != nil {
-        return fmt.Errorf("failed to send ID response: %w", err)
+        return fmt.Errorf("failed to send response: %w", err)
     }
 
-    log.Printf("Sent current game ID %d for player %d", gameID, player_id)
+    log.Printf("Sent current game ID %d for player %d (finished: %v)", gameID, player_id, finished)
     return nil
 }
 
@@ -752,11 +808,12 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
 
     history := make([]GamesHistoryData, 0)
     rows, err = conn.Query(context.Background(),
-        `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up
+        `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up, timestamp
          FROM games_history
          WHERE server_id = $1 AND game_id IN (
              SELECT id FROM games WHERE server_id = $1 AND stage != 'FINISHED'
-         )`, server_id)
+         )
+         ORDER BY timestamp ASC`, server_id)
     if err != nil {
         return fmt.Errorf("failed to query games history: %w", err)
     }
@@ -764,7 +821,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
 
     for rows.Next() {
         var h GamesHistoryData
-        if err := rows.Scan(&h.GameId, &h.PlayerId, &h.ServerId, &h.Step, &h.GameValue, &h.Bulls, &h.Cows, &h.IsComputer, &h.IsGiveUp); err != nil {
+        if err := rows.Scan(&h.GameId, &h.PlayerId, &h.ServerId, &h.Step, &h.GameValue, &h.Bulls, &h.Cows, &h.IsComputer, &h.IsGiveUp, &h.Timestamp); err != nil {
             return fmt.Errorf("failed to scan history row: %w", err)
         }
         history = append(history, h)
@@ -866,6 +923,52 @@ func handleGetGameNames(conn *pgx.Conn, correlationId string, gameId int64) erro
     }
 
     log.Printf("Sent game names for game_id %d", gameId)
+    return nil
+}
+
+func handleGetGameReport(conn *pgx.Conn, correlationId string, gameId int64) error {
+    var steps []GamesHistoryData
+
+    rows, err := conn.Query(context.Background(),
+        `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up, timestamp
+         FROM games_history
+         WHERE game_id = $1
+         ORDER BY timestamp ASC`, gameId)
+    if err != nil {
+        return fmt.Errorf("failed to query game steps: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var step GamesHistoryData
+        if err := rows.Scan(&step.GameId, &step.PlayerId, &step.ServerId, &step.Step, &step.GameValue, &step.Bulls, &step.Cows, &step.IsComputer, &step.IsGiveUp, &step.Timestamp); err != nil {
+            return fmt.Errorf("failed to scan step row: %w", err)
+        }
+        steps = append(steps, step)
+    }
+
+    response := GameReportResponse{
+        CorrelationId: correlationId,
+        GameId:        gameId,
+        Steps:         steps,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal game report response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send game report response: %w", err)
+    }
+
+    log.Printf("Sent game report for game_id %d with %d steps", gameId, len(steps))
     return nil
 }
 
@@ -982,7 +1085,8 @@ func checkAndCreateTables(conn *pgx.Conn) error {
       bulls INTEGER,
       cows INTEGER,
       is_computer BOOLEAN,
-      is_give_up BOOLEAN
+      is_give_up BOOLEAN,
+      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
      )`)
     if err != nil {
      return err
@@ -1014,14 +1118,14 @@ func checkAndCreateTables(conn *pgx.Conn) error {
 
 func handleInsertStep(conn *pgx.Conn, step GamesHistoryData) error {
   _, err := conn.Exec(context.Background(),
-   `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up)
-   VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-   step.GameId, step.PlayerId, step.ServerId, step.Step, step.GameValue, step.Bulls, step.Cows, step.IsComputer, step.IsGiveUp)
+   `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up, timestamp)
+   VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+   step.GameId, step.PlayerId, step.ServerId, step.Step, step.GameValue, step.Bulls, step.Cows, step.IsComputer, step.IsGiveUp, step.Timestamp)
 
    if err != nil {
      return fmt.Errorf("failed to insert step: %w", err)
    }
 
-    log.Printf("Inserted step with game id %d", step.GameId)
+    log.Printf("Inserted step with game id %d at %v", step.GameId, step.Timestamp)
     return nil
 }

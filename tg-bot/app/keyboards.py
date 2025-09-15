@@ -42,11 +42,12 @@ def create_keyboards():
         )
 
         full_game[_lang] = InlineKeyboardMarkup(
-            inline_keyboard=[[
-                InlineKeyboardButton(text=phrases.dict('fullGame', _lang), callback_data="full_game"),
-            ]]
+            inline_keyboard=[
+                [ InlineKeyboardButton(text=phrases.dict('fullGame', _lang), callback_data="full_game"), ],
+                [ InlineKeyboardButton(text=phrases.dict('toMenu', _lang), callback_data="to_menu"), ],
+            ]
         )
-    
+
         keyboard_langs = []
         for lng in phrases.langs():
             keyboard_langs.append([KeyboardButton(text=phrases.dict('name', lng))])
