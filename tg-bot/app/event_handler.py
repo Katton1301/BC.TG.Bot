@@ -938,6 +938,8 @@ class EventHandler:
                     reply_markup=ReplyKeyboardRemove()
                 )
 
+            return True
+
         except Exception as e:
             for player in [player1, player2]:
                 msg = f"Failed to start random game: {e}"
@@ -1082,9 +1084,9 @@ class EventHandler:
 
             if is_give_up:
                 if is_computer:
-                    report += f"{time_display} {step_num}. {phrases.dict('bot', lang)} {name}: {phrases.dict('giveUp', lang)}\n"
+                    report += f"{time_display} {phrases.dict('bot', lang)} {name}: {phrases.dict('giveUp', lang)}\n"
                 else:
-                    report += f"{time_display} {step_num}. {phrases.dict('player', lang)} {name}: {phrases.dict('giveUp', lang)}\n"
+                    report += f"{time_display} {phrases.dict('player', lang)} {name}: {phrases.dict('giveUp', lang)}\n"
             else:
                 if is_computer:
                     report += f"{time_display} {step_num}. {phrases.dict('bot', lang)} {name} {game_value:04d} {bulls}{phrases.dict('bulls', lang)} {cows}{phrases.dict('cows', lang)}\n"
@@ -1099,7 +1101,10 @@ class EventHandler:
         if len(game_results) == 2 and game_results[0]['place'] == game_results[1]['place']:
             return f"{result} {phrases.dict("draw", lang)}"
         elif game_results[player_i]['place'] == 1:
-            result += f" {phrases.dict("youWon", lang)}"
+            if game_results[player_i]['give_up']:
+                result += f" {phrases.dict("gaveUp", lang)}"
+            else:
+                result += f" {phrases.dict("youWon", lang)}"
         if len(game_results) > 1:
             sorted_results = sorted(game_results, key=lambda x: x['place'])
             result += f"\n{phrases.dict('gameResults', lang)}\n"
@@ -1164,6 +1169,7 @@ class EventHandler:
             await self._handle_server_unavailable(player_id)
             return False
         game_id = 0
+        steps = None
         try:
             lang = self.langs.get(player_id, "en")
             if not message.text.isdigit():
@@ -1284,7 +1290,7 @@ class EventHandler:
             msg = str(e)
             if game_id != 0:
                 error = Error(ErrorLevel.GAME_ERROR, msg)
-                if steps and player_i != -1 and "finished" in steps[player_i] and not steps[player_i]["finished"]:
+                if steps != None and player_i != -1 and "finished" in steps[player_i] and not steps[player_i]["finished"]:
                     error.game_id = game_id
                 await self.handle_error(player_id, error)
             else:
@@ -1469,8 +1475,14 @@ class EventHandler:
                     text=phrases.dict("gameNotFinished", lang)
                 )
                 return True
-
-            return await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+            
+            await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=phrases.dict("menu", lang),
+                reply_markup=kb.main[lang]
+            )
+            return True
 
 
         except asyncio.TimeoutError:
