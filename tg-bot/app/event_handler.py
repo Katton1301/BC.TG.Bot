@@ -311,7 +311,7 @@ class EventHandler:
             "state": await state.get_state()
         }
         return await self._insert_player(player)
-    
+
 
     async def change_player(self, callback: types.CallbackQuery, state: FSMContext, new_state: State):
         if not self.server_available:
@@ -709,12 +709,11 @@ class EventHandler:
             ok = await self._send_give_up_to_other_players(steps[player_i], lang, names)
             if not ok: False
 
-            if steps[player_i]['finished'] and unfinished_players == 0:
+            if game_response['game_stage'] == 'FINISHED':
+                return await self._send_game_results(player_id, game_id, lang, names)
+            elif steps[player_i]['finished'] and unfinished_players == 0:
                 ok = await self._finish_game(player_id, game_id, names)
                 if not ok: False
-            elif game_response["game_stage"] == "FINISHED":
-                return await self._send_game_results(player_id, game_id, names)
-            
             return True
 
         except asyncio.TimeoutError:
@@ -745,7 +744,11 @@ class EventHandler:
             if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                 raise Exception(f"Game service error: {game_response['result']}")
 
-            max_step = max(step['step'] for step in game_response['steps'])
+            steps = game_response['steps']
+            ok = await self._save_computer_steps(steps, game_id)
+            if not ok: return False
+
+            max_step = max(step['step'] for step in steps)
             update_game_message = {
                 "command": "update_game",
                 "data": {
@@ -958,7 +961,7 @@ class EventHandler:
                 raise asyncio.TimeoutError()
             if not db_response or 'id' not in db_response or 'finished' not in db_response:
                 raise Exception("Invalid get current game response from game service")
-            
+
             return [db_response['id'], db_response['finished']]
 
         except asyncio.TimeoutError:
@@ -1115,6 +1118,46 @@ class EventHandler:
                     result += f"\n"
         return result
 
+
+    async def _save_computer_steps(self, steps, game_id):
+        try:
+            for i in range(len(steps)):
+                if steps[i]["player"]:
+                    continue
+                step_message = {
+                    "command": "add_step",
+                    "data": {
+                        "game_id": game_id,
+                        "player_id": steps[i]["id"],
+                        "server_id": SERVER_ID,
+                        "step": steps[i]["step"],
+                        "game_value": steps[i]["game_value"],
+                        "bulls": steps[i]["bulls"],
+                        "cows": steps[i]["cows"],
+                        "is_computer": not steps[i]["player"],
+                        "is_give_up": False,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                    "timestamp": str(datetime.now())
+                }
+                await self.kafka.send_to_db(step_message)
+                logger.info(f"Computer {steps[i]["id"]} do step in game {game_id}")
+
+            return True
+
+        except Exception as e:
+            msg = str(e)
+            if game_id != 0:
+                error = Error(ErrorLevel.GAME_ERROR, msg)
+                if steps and player_i != -1 and "finished" in steps[player_i] and not steps[player_i]["finished"]:
+                    error.game_id = game_id
+                await self.handle_error(player_id, error)
+            else:
+                error = Error(ErrorLevel.ERROR, msg)
+                await self.handle_error(player_id, error)
+
+        return False
+
     async def do_step(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         if not self.server_available:
@@ -1159,34 +1202,31 @@ class EventHandler:
                 raise Exception(f"Game service not have this player steps")
 
             steps = game_response['steps']
-            player_i = -1
-            for i in range(len(steps)):
-                if steps[i]['player']:
-                    if steps[i]['id'] == player_id:
-                        player_i = i
-                    else:
-                        continue
-                step_message = {
-                    "command": "add_step",
-                    "data": {
-                        "game_id": game_id,
-                        "player_id": steps[i]["id"],
-                        "server_id": SERVER_ID,
-                        "step": steps[i]["step"],
-                        "game_value": steps[i]["game_value"],
-                        "bulls": steps[i]["bulls"],
-                        "cows": steps[i]["cows"],
-                        "is_computer": not steps[i]["player"],
-                        "is_give_up": False,
-                        "timestamp": datetime.now().isoformat(),
-                    },
-                    "timestamp": str(datetime.now())
-                }
-                await self.kafka.send_to_db(step_message)
-                logger.info(f"Player {player_id} do step in game {game_id}")
-
+            player_i = next((i for i, step in enumerate(steps) if step['player'] and step['id'] == player_id), -1)
             if player_i == -1:
                 raise Exception(f"Game service not have this player steps")
+
+            step_message = {
+                "command": "add_step",
+                "data": {
+                    "game_id": game_id,
+                    "player_id": player_id,
+                    "server_id": SERVER_ID,
+                    "step": steps[player_i]["step"],
+                    "game_value": steps[player_i]["game_value"],
+                    "bulls": steps[player_i]["bulls"],
+                    "cows": steps[player_i]["cows"],
+                    "is_computer": not steps[player_i]["player"],
+                    "is_give_up": False,
+                    "timestamp": datetime.now().isoformat(),
+                },
+                "timestamp": str(datetime.now())
+            }
+            await self.kafka.send_to_db(step_message)
+            logger.info(f"Player {player_id} do step in game {game_id}")
+            computer_steps = [step for step in steps if (not step["player"] and step["step"] == steps[player_i]["step"])]
+            ok = await self._save_computer_steps(computer_steps, game_id)
+            if not ok: return False
 
             update_game_message = {
                 "command": "update_game",
@@ -1386,7 +1426,7 @@ class EventHandler:
             [game_id, finished] = await self._get_current_game(player_id)
             if game_id == 0:
                 return False
-            
+
             if not finished:
                 await self.bot.send_message(
                     chat_id=player_id,
@@ -1397,7 +1437,7 @@ class EventHandler:
             names = await self._get_game_names(player_id, game_id)
             if names is None:
                 return False
-            
+
             await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
             return await self._send_game_report(player_id, game_id, lang, names)
 
@@ -1410,8 +1450,8 @@ class EventHandler:
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
 
         return False
-    
-    
+
+
     async def exit_to_menu(self, callback: types.CallbackQuery, state: FSMContext ):
         if not self.server_available:
             await self._handle_server_unavailable(callback.from_user.id)
@@ -1422,7 +1462,7 @@ class EventHandler:
             [game_id, finished] = await self._get_current_game(player_id)
             if game_id == 0:
                 return False
-            
+
             if not finished:
                 await self.bot.send_message(
                     chat_id=player_id,
@@ -1431,7 +1471,7 @@ class EventHandler:
                 return True
 
             return await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
-        
+
 
         except asyncio.TimeoutError:
             msg = phrases.dict("errorTimeout", lang)
