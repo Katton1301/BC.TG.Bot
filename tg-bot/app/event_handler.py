@@ -714,6 +714,10 @@ class EventHandler:
             elif steps[player_i]['finished'] and unfinished_players == 0:
                 ok = await self._finish_game(player_id, game_id, names)
                 if not ok: False
+
+            ok = await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+            if not ok: return False
+            await self.bot.send_message( chat_id=player_id, text=phrases.dict("youGaveUp", lang), reply_markup=kb.main[lang] )
             return True
 
         except asyncio.TimeoutError:
@@ -745,7 +749,7 @@ class EventHandler:
                 raise Exception(f"Game service error: {game_response['result']}")
 
             steps = game_response['steps']
-            ok = await self._save_computer_steps(steps, game_id)
+            ok = await self._save_computer_steps(steps, player_id, game_id)
             if not ok: return False
 
             max_step = max(step['step'] for step in steps)
@@ -777,6 +781,19 @@ class EventHandler:
 
     async def _send_game_results(self, player_id, game_id, lang, names):
         try:
+
+            get_current_players_msg = {
+                "command": "get_current_players",
+                "data": game_id,
+            }
+            db_response = await self.kafka.request_to_db(get_current_players_msg, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'player_ids' not in db_response:
+                raise Exception("Invalid get current players response from database")
+
+            current_player_ids = set(db_response['player_ids'])
+
             game_msg = {
                 "command": 16,  # Assuming 16 is GAME_RESULT command
                 "server_id": SERVER_ID,
@@ -798,7 +815,7 @@ class EventHandler:
                 raise Exception(f"Game service not have this player for game result")
 
             for i in range(len(game_result)):
-                if game_result[i]['player']:
+                if game_result[i]['player'] and game_result[i]['id'] in current_player_ids:
                     result = self._generate_game_results(game_result, i, lang, names)
                     await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.full_game[lang] )
 
@@ -1012,13 +1029,12 @@ class EventHandler:
         return None
 
 
-    def _generate_steps_result(self, steps, player_i, lang, names):
+    def _generate_steps_result(self, steps, player_i, lang, names, step_number):
         result = ""
         player_step = steps[player_i]
         game_value = player_step["game_value"]
-        step = player_step["step"]
-        result += f"{phrases.dict('step', lang)} {step}"
-        cur_steps = [d for d in steps if d['step'] == step and d['id'] != player_step['id']]
+        result += f"{phrases.dict('step', lang)} {step_number}"
+        cur_steps = [d for d in steps if d['step'] == step_number and d['id'] != player_step['id']]
         if len(cur_steps) > 0:
             result += f"\n{phrases.dict("you", lang)} -  {game_value:04}: {player_step["bulls"]}{phrases.dict("bulls", lang)} {player_step["cows"]}{phrases.dict("cows", lang)}"
             for i in range(len(cur_steps)):
@@ -1039,11 +1055,11 @@ class EventHandler:
                 if name['id'] != player_step['id'] and name['is_player']:
                     await self.bot.send_message( chat_id=name['id'], text=result )
 
-    async def _send_step_to_other_players(self, player_step, lang, names):
+    async def _send_step_to_other_players(self, player_step, lang, names, current_player_ids):
         name = next((d['name'] for d in names if d['id'] == player_step['id'] and d['is_player']), "Unknown")
         result = f"{phrases.dict('player', lang)} {name} {phrases.dict('makeStep', lang)} {player_step['step']}"
         for name in names:
-                if name['id'] != player_step['id'] and name['is_player']:
+                if name['id'] != player_step['id'] and name['is_player'] and player_step['id'] in current_player_ids:
                     await self.bot.send_message( chat_id=name['id'], text=result )
 
     def _generate_game_report(self, game_steps, lang, names):
@@ -1124,7 +1140,7 @@ class EventHandler:
         return result
 
 
-    async def _save_computer_steps(self, steps, game_id):
+    async def _save_computer_steps(self, steps, player_id, game_id):
         try:
             for i in range(len(steps)):
                 if steps[i]["player"]:
@@ -1154,8 +1170,6 @@ class EventHandler:
             msg = str(e)
             if game_id != 0:
                 error = Error(ErrorLevel.GAME_ERROR, msg)
-                if steps and player_i != -1 and "finished" in steps[player_i] and not steps[player_i]["finished"]:
-                    error.game_id = game_id
                 await self.handle_error(player_id, error)
             else:
                 error = Error(ErrorLevel.ERROR, msg)
@@ -1201,6 +1215,11 @@ class EventHandler:
                     msg = phrases.dict("errorInvalidGameValue", lang)
                     await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
                     return False
+                
+                if game_response['result'] == 20:  # Assuming 20 is ERROR_PLAYER_ALREADY_MADE_STEP code
+                    msg = phrases.dict("errorNotAllPlayersMadeStep", lang)
+                    await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
+                    return False
 
                 raise Exception(f"Game service error: {game_response['result']}")
 
@@ -1212,13 +1231,15 @@ class EventHandler:
             if player_i == -1:
                 raise Exception(f"Game service not have this player steps")
 
+            step_number = steps[player_i]["step"]
+
             step_message = {
                 "command": "add_step",
                 "data": {
                     "game_id": game_id,
                     "player_id": player_id,
                     "server_id": SERVER_ID,
-                    "step": steps[player_i]["step"],
+                    "step": step_number,
                     "game_value": steps[player_i]["game_value"],
                     "bulls": steps[player_i]["bulls"],
                     "cows": steps[player_i]["cows"],
@@ -1230,8 +1251,8 @@ class EventHandler:
             }
             await self.kafka.send_to_db(step_message)
             logger.info(f"Player {player_id} do step in game {game_id}")
-            computer_steps = [step for step in steps if (not step["player"] and step["step"] == steps[player_i]["step"])]
-            ok = await self._save_computer_steps(computer_steps, game_id)
+            computer_steps = [step for step in steps if (not step["player"] and step["step"] == step_number)]
+            ok = await self._save_computer_steps(computer_steps, player_id, game_id)
             if not ok: return False
 
             update_game_message = {
@@ -1240,7 +1261,7 @@ class EventHandler:
                     "id": game_id,
                     "server_id": SERVER_ID,
                     "stage": game_response["game_stage"],
-                    "step": steps[player_i]["step"],
+                    "step": step_number,
                     "secret_value": 0,
                     "mode": "unchangeable",
                 },
@@ -1262,15 +1283,27 @@ class EventHandler:
                 if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
                     unfinished_players += 1
 
-            await self._send_step_to_other_players(steps[player_i], lang, names)
+            get_current_players_msg = {
+                "command": "get_current_players",
+                "data": game_id,
+            }
+            db_response = await self.kafka.request_to_db(get_current_players_msg, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'player_ids' not in db_response:
+                raise Exception("Invalid get current players response from database")
+
+            current_player_ids = set(db_response['player_ids'])
+
+            await self._send_step_to_other_players(steps[player_i], lang, names, current_player_ids)
             if unstepped_players > 0:
                 result = self._generate_step_result(steps[player_i], lang)
                 result += f"\n{unstepped_players} {phrases.dict('waitPlayers', lang)}"
                 await message.answer(result, reply_markup=ReplyKeyboardRemove())
             else:
                 for i in range(len(steps)):
-                    if steps[i]["player"]:
-                        result = self._generate_steps_result(steps, i, lang, names)
+                    if steps[i]["player"] and not steps[i]['give_up']:
+                        result = self._generate_steps_result(steps, i, lang, names, step_number)
                         await self.bot.send_message( chat_id=steps[i]['id'], text=result, reply_markup=ReplyKeyboardRemove() )
 
 
@@ -1475,7 +1508,7 @@ class EventHandler:
                     text=phrases.dict("gameNotFinished", lang)
                 )
                 return True
-            
+
             await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
             await self.bot.send_message(
                 chat_id=player_id,

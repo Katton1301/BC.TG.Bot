@@ -108,6 +108,12 @@ type GameReportResponse struct {
     Steps         []GamesHistoryData `json:"steps"`
 }
 
+type CurrentPlayersResponse struct {
+    CorrelationId string  `json:"correlation_id"`
+    GameId        int64   `json:"game_id"`
+    PlayerIds     []int64 `json:"player_ids"`
+}
+
 type KafkaMessage struct {
   Command string          `json:"command"`
   CorrelationId string      `json:"correlation_id"`
@@ -122,11 +128,11 @@ func (g *GamesHistoryData) UnmarshalJSON(data []byte) error {
     }{
         Alias: (*Alias)(g),
     }
-    
+
     if err := json.Unmarshal(data, &aux); err != nil {
         return err
     }
-    
+
     parsedTime, err := time.Parse(time.RFC3339Nano, aux.Timestamp)
     if err != nil {
         parsedTime, err = time.Parse("2006-01-02T15:04:05", aux.Timestamp)
@@ -134,7 +140,7 @@ func (g *GamesHistoryData) UnmarshalJSON(data []byte) error {
             return err
         }
     }
-    
+
     g.Timestamp = parsedTime
     return nil
 }
@@ -396,6 +402,17 @@ func main() {
                     log.Printf("Failed to get game names: %v", err)
                 }
 
+            case "get_current_players":
+                var gameId int64
+                if err := json.Unmarshal(kafkaMsg.Data, &gameId); err != nil {
+                    log.Printf("Failed to parse game id: %v", err)
+                    continue
+                }
+                err = handleGetCurrentPlayers(conn, kafkaMsg.CorrelationId, gameId)
+                if err != nil {
+                    log.Printf("Failed to get current players: %v", err)
+                }
+
   // another commands
 
             default:
@@ -652,7 +669,7 @@ func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64
     var finished bool
 
     err := conn.QueryRow(context.Background(),
-        `SELECT g.id, g.stage 
+        `SELECT g.id, g.stage
          FROM games g
          JOIN player_games pg ON g.id = pg.game_id
          WHERE pg.player_id = $1 AND pg.is_current_game = true`,
@@ -1113,6 +1130,52 @@ func checkAndCreateTables(conn *pgx.Conn) error {
     log.Println("Table 'feedback' created successfully")
   }
 
+    return nil
+}
+
+func handleGetCurrentPlayers(conn *pgx.Conn, correlationId string, gameId int64) error {
+    var playerIds []int64
+
+    rows, err := conn.Query(context.Background(),
+        `SELECT player_id
+         FROM player_games
+         WHERE game_id = $1 AND is_current_game = true`,
+        gameId)
+    if err != nil {
+        return fmt.Errorf("failed to query current players: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var playerId int64
+        if err := rows.Scan(&playerId); err != nil {
+            return fmt.Errorf("failed to scan player id: %w", err)
+        }
+        playerIds = append(playerIds, playerId)
+    }
+
+    response := CurrentPlayersResponse{
+        CorrelationId: correlationId,
+        GameId:        gameId,
+        PlayerIds:     playerIds,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal current players response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send current players response: %w", err)
+    }
+
+    log.Printf("Sent current players for game_id %d: %v", gameId, playerIds)
     return nil
 }
 
