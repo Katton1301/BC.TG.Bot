@@ -87,6 +87,12 @@ type IDResponse struct {
   ID    int64 `json:"id"`
 }
 
+type AnswerResponse struct {
+  CorrelationId string `json:"correlation_id"`
+  Success bool `json:"success"`
+  Error string `json:"error"`
+}
+
 type CurrentGameResponse struct {
     CorrelationId string `json:"correlation_id"`
     ID            int64  `json:"id"`
@@ -112,6 +118,23 @@ type CurrentPlayersResponse struct {
     CorrelationId string  `json:"correlation_id"`
     GameId        int64   `json:"game_id"`
     PlayerIds     []int64 `json:"player_ids"`
+}
+
+type LobbyData struct {
+    Id          int64  `json:"id"`
+    ServerId    int64  `json:"server_id"`
+    HostId   int64  `json:"host_id"`
+    IsPrivate   bool   `json:"is_private"`
+    Password    string `json:"password,omitempty"`
+    Status      string `json:"status"` // WAITING, STARTED, FINISHED
+}
+
+type LobbyPlayerData struct {
+    LobbyId    int64  `json:"lobby_id"`
+    PlayerId   int64  `json:"player_id"`
+    IsReady    bool   `json:"is_ready"`
+    JoinedAt   time.Time `json:"joined_at"`
+    Host      bool   `json:"host"`
 }
 
 type KafkaMessage struct {
@@ -412,6 +435,50 @@ func main() {
                 if err != nil {
                     log.Printf("Failed to get current players: %v", err)
                 }
+
+            case "create_lobby":
+                var lobby LobbyData
+                if err := json.Unmarshal(kafkaMsg.Data, &lobby); err != nil {
+                    log.Printf("Failed to parse lobby data: %v", err)
+                    continue
+                }
+                err = handleCreateLobby(conn, kafkaMsg.CorrelationId, lobby)
+                
+            case "join_lobby":
+                var joinData struct {
+                    LobbyId   int64  `json:"lobby_id"`
+                    PlayerId  int64  `json:"player_id"`
+                    Password  string `json:"password,omitempty"`
+                }
+                if err := json.Unmarshal(kafkaMsg.Data, &joinData); err != nil {
+                    log.Printf("Failed to parse join lobby data: %v", err)
+                    continue
+                }
+                err = handleJoinLobby(conn, kafkaMsg.CorrelationId, joinData)
+                
+            case "leave_lobby":
+                var lobbyPlayerData LobbyPlayerData
+                if err := json.Unmarshal(kafkaMsg.Data, &lobbyPlayerData); err != nil {
+                    log.Printf("Failed to parse leave lobby data: %v", err)
+                    continue
+                }
+                err = handleLeaveLobby(conn, lobbyPlayerData)
+                
+            case "set_player_ready":
+                var lobbyPlayerData LobbyPlayerData
+                if err := json.Unmarshal(kafkaMsg.Data, &lobbyPlayerData); err != nil {
+                    log.Printf("Failed to parse ready data: %v", err)
+                    continue
+                }
+                err = handleSetPlayerReady(conn, lobbyPlayerData)
+                
+            case "start_lobby_game":
+                var lobbyPlayerData LobbyPlayerData
+                if err := json.Unmarshal(kafkaMsg.Data, &lobbyPlayerData); err != nil {
+                    log.Printf("Failed to parse lobby id: %v", err)
+                    continue
+                }
+                err = handleStartLobbyGame(conn, kafkaMsg.CorrelationId, lobbyPlayerData)
 
   // another commands
 
@@ -989,146 +1056,521 @@ func handleGetGameReport(conn *pgx.Conn, correlationId string, gameId int64) err
     return nil
 }
 
-func checkAndCreateTables(conn *pgx.Conn) error {
-  var playersTableExists bool
-  err := conn.QueryRow(context.Background(),
-    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'players')").Scan(&playersTableExists)
-   if err != nil {
-    return err
-  }
-
-  if !playersTableExists {
-    _, err := conn.Exec(context.Background(),
-     `CREATE TABLE players (
-      id BIGINT PRIMARY KEY,
-      firstname TEXT,
-      lastname TEXT,
-      fullname TEXT,
-      username TEXT,
-      lang TEXT,
-      state TEXT
-     )`)
+func handleCreateLobby(conn *pgx.Conn, correlation_id string, lobby LobbyData) error {
+    var newID int64
+    err := conn.QueryRow(context.Background(), "SELECT nextval('lobbies_id_seq')").Scan(&newID)
     if err != nil {
-     return err
+        return fmt.Errorf("failed to generate new ID: %w", err)
+    }
+
+    _, err = conn.Exec(context.Background(),
+        `INSERT INTO lobbies(id, server_id, host_id, is_private, password, status)
+        VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        newID, lobby.ServerId, lobby.HostId, lobby.IsPrivate, lobby.Password, "WAITING")
+
+    if err != nil {
+        return fmt.Errorf("failed to insert lobby: %w", err)
+    }
+
+    _, err = conn.Exec(context.Background(),
+        `INSERT INTO lobby_players(lobby_id, player_id, is_ready, joined_at, host)
+        VALUES($1, $2, $3, $4, $5)`,
+        newID, lobby.HostId, false, time.Now(), true)
+
+    if err != nil {
+        return fmt.Errorf("failed to add creator to lobby: %w", err)
+    }
+
+    response := IDResponse{
+        CorrelationId: correlation_id,
+        Table:        "lobbies",
+        ID:           newID,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal ID response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    return err
+}
+
+func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
+    LobbyId   int64  `json:"lobby_id"`
+    PlayerId  int64  `json:"player_id"`
+    Password  string `json:"password,omitempty"`
+}) error {
+    var lobby LobbyData
+    err := conn.QueryRow(context.Background(),
+        `SELECT id, server_id, host_id, is_private, password, status
+         FROM lobbies WHERE id = $1`,
+        joinData.LobbyId).Scan(
+            &lobby.Id, &lobby.ServerId, &lobby.HostId, &lobby.IsPrivate, 
+            &lobby.Password, &lobby.Status)
+
+    if err != nil {
+        if err == pgx.ErrNoRows {
+            return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyNotFound")
+        }
+        return fmt.Errorf("failed to query lobby: %w", err)
+    }
+
+    if lobby.IsPrivate && lobby.Password != joinData.Password {
+        return sendAnswerResponse(correlation_id, false, "DBAnswerInvalidPassword")
+    }
+
+    if lobby.Status != "WAITING" {
+        return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyIsntAcceptingPlayers")
+    }
+
+    var existingPlayer int64
+    err = conn.QueryRow(context.Background(),
+        `SELECT player_id FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
+        joinData.LobbyId, joinData.PlayerId).Scan(&existingPlayer)
+
+    if err == nil {
+        return sendAnswerResponse(correlation_id, true, "DBAnswerPlayerAlreadyInLobby")
+    } else if err != pgx.ErrNoRows {
+        return fmt.Errorf("failed to check player existence: %w", err)
+    }
+
+    tx, err := conn.Begin(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+    defer tx.Rollback(context.Background())
+
+    _, err = tx.Exec(context.Background(),
+        `INSERT INTO lobby_players(lobby_id, player_id, is_ready, joined_at, host)
+         VALUES($1, $2, $3, $4, $5)`,
+        joinData.LobbyId, joinData.PlayerId, false, time.Now(), false)
+
+    if err != nil {
+        return fmt.Errorf("failed to add player to lobby: %w", err)
+    }
+
+    if err := tx.Commit(context.Background()); err != nil {
+        return fmt.Errorf("failed to commit transaction: %w", err)
+    }
+
+    err = sendAnswerResponse(correlation_id, true, "")
+
+    log.Printf("Player %d joined lobby %d", joinData.PlayerId, joinData.LobbyId)
+    return err
+}
+
+func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
+    tx, err := conn.Begin(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+    defer tx.Rollback(context.Background())
+
+    var hostId int64
+    err = tx.QueryRow(context.Background(),
+        `SELECT host_id, current_players FROM lobbies WHERE id = $1`,
+        lobbyPlayerData.LobbyId).Scan(&hostId)
+
+    if err != nil {
+        return fmt.Errorf("failed to get lobby info: %w", err)
+    }
+
+    result, err := tx.Exec(context.Background(),
+        `DELETE FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
+        lobbyPlayerData.LobbyId, lobbyPlayerData.PlayerId)
+
+    if err != nil {
+        return fmt.Errorf("failed to remove player from lobby: %w", err)
+    }
+
+    if result.RowsAffected() == 0 {
+        log.Printf("Player %d not found in lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
+        return nil
+    }
+
+    var playerCount int
+    err = tx.QueryRow(context.Background(),
+        `SELECT COUNT(*) FROM lobby_players WHERE lobby_id = $1`,
+        lobbyPlayerData.LobbyId).Scan(&playerCount)
+
+    if err != nil {
+        return fmt.Errorf("failed to check player count: %w", err)
+    }
+
+    if playerCount == 0 {
+        _, err = tx.Exec(context.Background(),
+            `DELETE FROM lobbies WHERE id = $1`,
+            lobbyPlayerData.LobbyId)
+        if err != nil {
+            return fmt.Errorf("failed to delete empty lobby: %w", err)
+        }
+        log.Printf("Deleted empty lobby %d", lobbyPlayerData.LobbyId)
+    } else {
+        if hostId == lobbyPlayerData.PlayerId {
+            var newHostId int64
+            err = tx.QueryRow(context.Background(),
+                `SELECT player_id FROM lobby_players 
+                WHERE lobby_id = $1 AND player_id != $2
+                ORDER BY joined_at ASC 
+                LIMIT 1`,
+                lobbyPlayerData.LobbyId, lobbyPlayerData.PlayerId).Scan(&newHostId)
+
+            if err != nil {
+                if err == pgx.ErrNoRows {
+                    log.Printf("No other players in lobby %d to assign as host", lobbyPlayerData.LobbyId)
+                } else {
+                    return fmt.Errorf("failed to find new host: %w", err)
+                }
+            } else {
+                _, err = tx.Exec(context.Background(),
+                    `UPDATE lobbies SET host_id = $1 WHERE id = $2`,
+                    newHostId, lobbyPlayerData.LobbyId)
+
+                if err != nil {
+                    return fmt.Errorf("failed to update lobby host: %w", err)
+                }
+                log.Printf("Transferred host from player %d to player %d in lobby %d", 
+                    lobbyPlayerData.PlayerId, newHostId, lobbyPlayerData.LobbyId)
+            }
+        }
+    }
+
+    if err := tx.Commit(context.Background()); err != nil {
+        return fmt.Errorf("failed to commit transaction: %w", err)
+    }
+
+    log.Printf("Player %d left lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
+    return nil
+}
+
+func handleSetPlayerReady(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
+    result, err := conn.Exec(context.Background(),
+        `UPDATE lobby_players SET is_ready = $1 
+         WHERE lobby_id = $2 AND player_id = $3`,
+        lobbyPlayerData.IsReady, lobbyPlayerData.LobbyId, lobbyPlayerData.PlayerId)
+
+    if err != nil {
+        return fmt.Errorf("failed to update player readiness: %w", err)
+    }
+
+    if result.RowsAffected() == 0 {
+        return fmt.Errorf("player %d not found in lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
+    }
+
+    log.Printf("Player %d readiness set to %t in lobby %d", 
+        lobbyPlayerData.PlayerId, lobbyPlayerData.IsReady, lobbyPlayerData.LobbyId)
+    return nil
+}
+
+func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyPlayerData LobbyPlayerData) error {
+    tx, err := conn.Begin(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+    defer tx.Rollback(context.Background())
+
+    var lobby LobbyData
+    err = tx.QueryRow(context.Background(),
+        `SELECT id, server_id, creator_id, is_private, status, created_at
+         FROM lobbies WHERE id = $1`,
+        lobbyPlayerData.LobbyId).Scan(
+            &lobby.Id, &lobby.ServerId, &lobby.HostId, &lobby.IsPrivate, &lobby.Status)
+
+    if err != nil {
+        return fmt.Errorf("failed to query lobby: %w", err)
+    }
+
+    if lobby.HostId != lobbyPlayerData.PlayerId {
+        return sendAnswerResponse(correlation_id, false, "DBAnswerOnlyHostCanStartGame")
+    }
+
+    if lobby.Status != "WAITING" {
+        return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyCannotStartGameInCurrentStatus")
+    }
+
+    rows, err := tx.Query(context.Background(),
+        `SELECT player_id, is_ready FROM lobby_players WHERE lobby_id = $1`,
+        lobbyPlayerData.LobbyId)
+
+    if err != nil {
+        return fmt.Errorf("failed to query lobby players: %w", err)
+    }
+    defer rows.Close()
+
+    players := make([]struct {
+        PlayerId int64
+        IsReady  bool
+    }, 0)
+
+    for rows.Next() {
+        var player struct {
+            PlayerId int64
+            IsReady  bool
+        }
+        if err := rows.Scan(&player.PlayerId, &player.IsReady); err != nil {
+            return fmt.Errorf("failed to scan player: %w", err)
+        }
+        players = append(players, player)
+    }
+
+    for _, player := range players {
+        if !player.IsReady {
+            return sendAnswerResponse(correlation_id, false, "DBAnswerNotAllPlayersAreReady")
+        }
+    }
+
+    var gameId int64
+    err = tx.QueryRow(context.Background(), "SELECT nextval('games_id_seq')").Scan(&gameId)
+    if err != nil {
+        return fmt.Errorf("failed to generate game ID: %w", err)
+    }
+
+    _, err = tx.Exec(context.Background(),
+        `INSERT INTO games(id, server_id, mode, stage, step, secret_value)
+         VALUES($1, $2, $3, $4, $5, $6)`,
+        gameId, lobby.ServerId, "multiplayer", "WAIT_A_NUMBER", 0, 0)
+
+    if err != nil {
+        return fmt.Errorf("failed to create game: %w", err)
+    }
+
+    for _, player := range players {
+        isHost := (player.PlayerId == lobby.HostId)
+        _, err = tx.Exec(context.Background(),
+            `INSERT INTO player_games(player_id, server_id, game_id, is_current_game, is_host)
+             VALUES($1, $2, $3, $4, $5)`,
+            player.PlayerId, lobby.ServerId, gameId, true, isHost)
+        if err != nil {
+            return fmt.Errorf("failed to add player to game: %w", err)
+        }
+    }
+
+    _, err = tx.Exec(context.Background(),
+        `UPDATE lobbies SET status = 'STARTED' WHERE id = $1`,
+        lobbyPlayerData.LobbyId)
+
+    if err != nil {
+        return fmt.Errorf("failed to update lobby status: %w", err)
+    }
+
+    if err := tx.Commit(context.Background()); err != nil {
+        return fmt.Errorf("failed to commit transaction: %w", err)
+    }
+
+    response := IDResponse{
+        CorrelationId: correlation_id,
+        Table:        "games",
+        ID:           gameId,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    log.Printf("Host player %d started game %d from lobby %d with %d players", 
+        lobbyPlayerData.PlayerId, gameId, lobbyPlayerData.LobbyId, len(players))
+    return err
+}
+
+func checkAndCreateTables(conn *pgx.Conn) error {
+    var playersTableExists bool
+    err := conn.QueryRow(context.Background(),
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'players')").Scan(&playersTableExists)
+    if err != nil {
+    return err
+    }
+
+    if !playersTableExists {
+    _, err := conn.Exec(context.Background(),
+        `CREATE TABLE players (
+        id BIGINT PRIMARY KEY,
+        firstname TEXT,
+        lastname TEXT,
+        fullname TEXT,
+        username TEXT,
+        lang TEXT,
+        state TEXT
+        )`)
+    if err != nil {
+        return err
     }
     log.Println("Table 'players' created successfully")
-  }
+    }
 
-  var gamesTableExists bool
-  err = conn.QueryRow(context.Background(),
-    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'games')").Scan(&gamesTableExists)
-  if err != nil {
-    return err
-  }
+    var gamesTableExists bool
+    err = conn.QueryRow(context.Background(),
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'games')").Scan(&gamesTableExists)
+    if err != nil {
+        return err
+    }
 
-  if !gamesTableExists {
+    if !gamesTableExists {
     _, err := conn.Exec(context.Background(),
-    `CREATE TABLE games (
-    id BIGINT PRIMARY KEY,
-    mode TEXT,
-    server_id BIGINT,
-    stage TEXT,
-    step INTEGER,
-    secret_value INTEGER
-    );
-    CREATE SEQUENCE games_id_seq START 1;`)
+        `CREATE TABLE games (
+        id BIGINT PRIMARY KEY,
+        mode TEXT,
+        server_id BIGINT,
+        stage TEXT,
+        step INTEGER,
+        secret_value INTEGER
+        );
+        CREATE SEQUENCE games_id_seq START 1;`)
     if err != nil {
     return err
     }
     log.Println("Table 'games' and sequence 'games_id_seq' created successfully")
-  }
+    }
 
-  var playerGamesTableExists bool
-  err = conn.QueryRow(context.Background(),
-    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'player_games')").Scan(&playerGamesTableExists)
-  if err != nil {
+    var playerGamesTableExists bool
+    err = conn.QueryRow(context.Background(),
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'player_games')").Scan(&playerGamesTableExists)
+    if err != nil {
     return err
-  }
+    }
 
-  if !playerGamesTableExists {
-     _, err := conn.Exec(context.Background(),
-      `CREATE TABLE player_games (
+    if !playerGamesTableExists {
+        _, err := conn.Exec(context.Background(),
+        `CREATE TABLE player_games (
         player_id BIGINT,
         server_id BIGINT,
         game_id BIGINT,
         is_current_game BOOLEAN,
         is_host BOOLEAN
-      )`)
-     if err != nil {
-      return err
-     }
-     log.Println("Table 'player_games' created successfully")
-  }
+        )`)
+        if err != nil {
+        return err
+        }
+        log.Println("Table 'player_games' created successfully")
+    }
 
-  var computerGamesTableExists bool
-  err = conn.QueryRow(context.Background(),
-    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'computers')").Scan(&computerGamesTableExists)
-  if err != nil {
-    return err
-  }
-
-  if !computerGamesTableExists {
-      _, err := conn.Exec(context.Background(),
-          `CREATE TABLE computers (
-              computer_id BIGINT,
-              player_id BIGINT,
-              server_id BIGINT,
-              game_id BIGINT,
-              game_brain TEXT,
-              name TEXT
-          );
-          CREATE SEQUENCE computers_id_seq START 1;`)
-      if err != nil {
-          return err
-      }
-      log.Println("Table 'computers' and sequence 'computers_id_seq' created successfully")
-  }
-
-  var gamesHistoryTableExists bool
-  err = conn.QueryRow(context.Background(),
-    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'games_history')").Scan(&gamesHistoryTableExists)
-  if err != nil {
-  return err
-  }
-
-  if !gamesHistoryTableExists {
-    _, err := conn.Exec(context.Background(),
-     `CREATE TABLE games_history (
-      game_id BIGINT,
-      player_id BIGINT,
-      server_id BIGINT,
-      step INTEGER,
-      game_value INTEGER,
-      bulls INTEGER,
-      cows INTEGER,
-      is_computer BOOLEAN,
-      is_give_up BOOLEAN,
-      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-     )`)
+    var computerGamesTableExists bool
+    err = conn.QueryRow(context.Background(),
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'computers')").Scan(&computerGamesTableExists)
     if err != nil {
-     return err
+    return err
+    }
+
+    if !computerGamesTableExists {
+        _, err := conn.Exec(context.Background(),
+            `CREATE TABLE computers (
+                computer_id BIGINT,
+                player_id BIGINT,
+                server_id BIGINT,
+                game_id BIGINT,
+                game_brain TEXT,
+                name TEXT
+            );
+            CREATE SEQUENCE computers_id_seq START 1;`)
+        if err != nil {
+            return err
+        }
+        log.Println("Table 'computers' and sequence 'computers_id_seq' created successfully")
+    }
+
+    var gamesHistoryTableExists bool
+    err = conn.QueryRow(context.Background(),
+    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'games_history')").Scan(&gamesHistoryTableExists)
+    if err != nil {
+    return err
+    }
+
+    if !gamesHistoryTableExists {
+    _, err := conn.Exec(context.Background(),
+        `CREATE TABLE games_history (
+        game_id BIGINT,
+        player_id BIGINT,
+        server_id BIGINT,
+        step INTEGER,
+        game_value INTEGER,
+        bulls INTEGER,
+        cows INTEGER,
+        is_computer BOOLEAN,
+        is_give_up BOOLEAN,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`)
+    if err != nil {
+        return err
     }
     log.Println("Table 'games_history' created successfully")
-  }
+    }
 
-  var feedBackTableExists bool
-  err = conn.QueryRow(context.Background(),
+    var feedBackTableExists bool
+    err = conn.QueryRow(context.Background(),
     "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'feedback')").Scan(&feedBackTableExists)
-   if err != nil {
-    return err
-  }
-
-  if !feedBackTableExists {
-    _, err := conn.Exec(context.Background(),
-     `CREATE TABLE feedback (
-      username TEXT,
-      message TEXT
-     )`)
     if err != nil {
-     return err
+    return err
+    }
+
+    if !feedBackTableExists {
+    _, err := conn.Exec(context.Background(),
+        `CREATE TABLE feedback (
+        username TEXT,
+        message TEXT
+        )`)
+    if err != nil {
+        return err
     }
     log.Println("Table 'feedback' created successfully")
-  }
+}
+
+    var lobbiesTableExists bool
+    err = conn.QueryRow(context.Background(),
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'lobbies')").Scan(&lobbiesTableExists)
+    if err != nil {
+        return err
+    }
+
+    if !lobbiesTableExists {
+        _, err := conn.Exec(context.Background(),
+            `CREATE TABLE lobbies (
+                id BIGINT PRIMARY KEY,
+                server_id BIGINT,
+                host_id BIGINT,
+                is_private BOOLEAN,
+                password TEXT,
+                status TEXT
+            );
+            CREATE SEQUENCE lobbies_id_seq START 1;`)
+        if err != nil {
+            return err
+        }
+        log.Println("Table 'lobbies' and sequence 'lobbies_id_seq' created successfully")
+    }
+
+    var lobbyPlayersTableExists bool
+    err = conn.QueryRow(context.Background(),
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'lobby_players')").Scan(&lobbyPlayersTableExists)
+    if err != nil {
+        return err
+    }
+
+    if !lobbyPlayersTableExists {
+        _, err := conn.Exec(context.Background(),
+            `CREATE TABLE lobby_players (
+                lobby_id BIGINT,
+                player_id BIGINT,
+                is_ready BOOLEAN,
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                host BOOLEAN
+            )`)
+        if err != nil {
+            return err
+        }
+        log.Println("Table 'lobby_players' created successfully")
+    }
 
     return nil
 }
@@ -1191,4 +1633,26 @@ func handleInsertStep(conn *pgx.Conn, step GamesHistoryData) error {
 
     log.Printf("Inserted step with game id %d at %v", step.GameId, step.Timestamp)
     return nil
+}
+
+func sendAnswerResponse(correlation_id string, success bool, errorMessage string) error {
+    response := AnswerResponse{
+        CorrelationId: correlation_id,
+        Success:        success,
+        Error:          errorMessage,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal answer response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    log.Printf("Answer response sent: %s", errorMessage)
+    return err
 }
