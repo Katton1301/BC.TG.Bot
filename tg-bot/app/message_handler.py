@@ -14,6 +14,11 @@ async def setup_event_handler(eh):
     router.message.register(handle_bot_difficulty, StateFilter(PlayerStates.choose_bot_difficulty))
     router.message.register(handle_number_input, StateFilter(PlayerStates.waiting_for_number))
     router.message.register(handle_waiting_a_rival, StateFilter(PlayerStates.waiting_a_rival))
+    router.message.register(handle_wait_password, StateFilter(PlayerStates.wait_password))
+    router.message.register(handle_in_lobby, StateFilter(PlayerStates.in_lobby))
+    router.message.register(handle_choose_lobby_type, StateFilter(PlayerStates.choose_lobby_type))
+    router.message.register(handle_enter_password, StateFilter(PlayerStates.enter_password))
+    router.message.register(handle_enter_lobby_id, StateFilter(PlayerStates.enter_lobby_id))
     router.message.register(handle_lang, StateFilter(PlayerStates.lang_state))
     router.message.register(handle_feedback, StateFilter(PlayerStates.feedback_state))
     router.message.register(handle_full_game, F.data == "full_game")
@@ -48,6 +53,26 @@ async def handle_number_input(message: types.Message, state: FSMContext):
 @router.message(StateFilter(PlayerStates.waiting_a_rival))
 async def handle_waiting_a_rival(message: types.Message, state: FSMContext):
     await router.controller.state_waiting_a_rival(message, state)
+
+@router.message(StateFilter(PlayerStates.wait_password))
+async def handle_wait_password(message: types.Message, state: FSMContext):
+    await router.controller.state_wait_password(message, state)
+
+@router.message(StateFilter(PlayerStates.in_lobby))
+async def handle_in_lobby(message: types.Message, state: FSMContext):
+    await router.controller.state_in_lobby(message, state)
+
+@router.message(StateFilter(PlayerStates.choose_lobby_type))
+async def handle_choose_lobby_type(message: types.Message, state: FSMContext):
+    await router.controller.state_choose_lobby_type(message, state)
+
+@router.message(StateFilter(PlayerStates.enter_password))
+async def handle_enter_password(message: types.Message, state: FSMContext):
+    await router.controller.state_enter_password(message, state)
+
+@router.message(StateFilter(PlayerStates.enter_lobby_id))
+async def handle_enter_lobby_id(message: types.Message, state: FSMContext):
+    await router.controller.state_enter_lobby_id(message, state)
 
 @router.message(StateFilter(PlayerStates.lang_state))
 async def handle_lang(message: types.Message, state: FSMContext):

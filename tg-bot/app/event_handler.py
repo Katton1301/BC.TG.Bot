@@ -707,13 +707,13 @@ class EventHandler:
                 return False
 
             ok = await self._send_give_up_to_other_players(steps[player_i], lang, names)
-            if not ok: False
+            if not ok: return False
 
             if game_response['game_stage'] == 'FINISHED':
                 return await self._send_game_results(player_id, game_id, lang, names)
             elif steps[player_i]['finished'] and unfinished_players == 0:
                 ok = await self._finish_game(player_id, game_id, names)
-                if not ok: False
+                if not ok: return False
 
             ok = await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
             if not ok: return False
@@ -906,9 +906,10 @@ class EventHandler:
             asyncio.create_task(self._remove_waiting_player_after_timeout(message.from_user.id, lang))
             await message.answer(f"{phrases.dict('waitingForOpponent', lang)}", reply_markup=ReplyKeyboardRemove())
         else:
-            ok = await self._start_random_game(self.waiting_player, player)
-            if not ok: return False
+            _waiting_player = self.waiting_player
             self.waiting_player = None
+            ok = await self._start_random_game(_waiting_player, player)
+            if not ok: return False
 
     async def _remove_waiting_player_after_timeout(self, player_id: int, lang: str):
         await asyncio.sleep(60)
@@ -1177,6 +1178,68 @@ class EventHandler:
 
         return False
 
+    async def _enter_by_lobby_id(self, player_id, lobby_id):
+        lang = self.langs.get(player_id, "en")
+        try:
+            join_data = {
+                "command": "join_lobby",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "player_id": player_id,
+                    "password": ""
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            db_response = await self.kafka.request_to_db(join_data, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'success' not in db_response:
+                raise Exception("Invalid response from database")
+
+            if not db_response['success']:
+                error_msg = db_response.get('error', 'Unknown error')
+                if error_msg == "DBAnswerPasswordNeeded":
+                    await self.change_player_state_by_id(player_id, PlayerStates.enter_password)
+                    await self.bot.send_message(
+                        chat_id=player_id,
+                        text=phrases.dict("enterLobbyPassword", lang),
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return True
+                else:
+                    await self.bot.send_message(
+                        chat_id=player_id,
+                        text=phrases.dict(error_msg, lang),
+                        reply_markup=kb.game[lang]
+                    )
+                    return False
+
+            game_id = db_response.get('id', 0)
+            if game_id == 0: return False
+
+            ok = await self._add_player_to_game(game_id, player_id)
+            if not ok: return False
+
+            await self.change_player_state_by_id(player_id, PlayerStates.in_lobby)
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=phrases.dict("youEnteredLobby", lang),
+                reply_markup=kb.get_lobby_keyboard(False, False, lang)
+            )
+
+            return True
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
+
+        except Exception as e:
+            msg = f"Failed to enter lobby for user {player_id}: {str(e)}"
+            await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
+
+        return False
+
     async def do_step(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         if not self.server_available:
@@ -1215,7 +1278,7 @@ class EventHandler:
                     msg = phrases.dict("errorInvalidGameValue", lang)
                     await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
                     return False
-                
+
                 if game_response['result'] == 20:  # Assuming 20 is ERROR_PLAYER_ALREADY_MADE_STEP code
                     msg = phrases.dict("errorNotAllPlayersMadeStep", lang)
                     await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
@@ -1311,7 +1374,7 @@ class EventHandler:
                 return await self._send_game_results(player_id, game_id, lang, names)
             elif steps[player_i]['finished'] and unfinished_players == 0:
                 ok = await self._finish_game(player_id, game_id, names)
-                if not ok: False
+                if not ok: return False
             return True
 
         except asyncio.TimeoutError:
@@ -1524,6 +1587,234 @@ class EventHandler:
 
         except Exception as e:
             msg = f"Failed to send give up for user {player_id}, error - {e}"
+            await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
+
+        return False
+
+
+    async def create_lobby(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        lang = self.langs.get(message.from_user.id, "en")
+        await self.change_player(message, state, PlayerStates.wait_password)
+        await message.answer(
+            phrases.dict("enterLobbyPassword", lang),
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return True
+
+    async def create_lobby_with_password(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        player_id = message.from_user.id
+        password = message.text
+        lang = self.langs.get(player_id, "en")
+
+        try:
+            game_id = await self._create_game(player_id, "lobby")
+            if game_id == 0:
+                return False
+
+            lobby_data = {
+                "command": "create_lobby",
+                "data": {
+                    "id": 0,
+                    "server_id": SERVER_ID,
+                    "host_id": player_id,
+                    "game_id": game_id,
+                    "is_private": bool(password.strip()),
+                    "password": password.strip(),
+                    "status": "WAITING"
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            db_response = await self.kafka.request_to_db(lobby_data, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'id' not in db_response:
+                raise Exception("Invalid response from database: missing lobby ID")
+
+            if 'table' not in db_response or db_response['table'] != 'lobbies':
+                raise Exception("Invalid response from database: wrong table")
+
+            lobby_id = db_response['id']
+            logger.info(f"Lobby created with ID: {lobby_id}")
+
+            await self.change_player(message, state, PlayerStates.in_lobby)
+            msg = f"{phrases.dict('lobbyCreated', lang)} \n{phrases.dict('lobbyId', lang)} - {lobby_id}"
+            if password.strip():
+                msg += f"\n{phrases.dict('lobbyPassword', lang)} - {password}\n{phrases.dict('sendPrivate', lang)}"
+            else:
+                msg += f"\n{phrases.dict('lobbyPublic', lang)}"
+            await message.answer(
+                msg,
+                reply_markup=kb.get_lobby_keyboard(True, False, lang)
+            )
+
+            return True
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
+
+        except Exception as e:
+            msg = f"Failed to create lobby for user {player_id}: {str(e)}"
+            await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
+
+        return False
+
+
+    async def enter_lobby(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        lang = self.langs.get(message.from_user.id, "en")
+        await self.change_player(message, state, PlayerStates.choose_lobby_type)
+        await message.answer(
+            phrases.dict("chooseLobby", lang),
+            reply_markup=kb.lobby_types[lang]
+        )
+        return True
+
+    async def enter_by_lobby_id(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        player_id = message.from_user.id
+        lobby_id = int(message.text)
+        return await self._enter_by_lobby_id(player_id, lobby_id)
+
+    async def enter_by_lobby_id_and_password(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        player_id = message.from_user.id
+        password = message.text
+        lang = self.langs.get(player_id, "en")
+
+        try:
+            get_lobby_msg = {
+                "command": "get_lobby_id",
+                "data": player_id,
+                "timestamp": str(datetime.now())
+            }
+
+            db_response = await self.kafka.request_to_db(get_lobby_msg, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'id' not in db_response:
+                raise Exception("Invalid response from database: missing lobby ID")
+
+            lobby_id = db_response['id']
+            if lobby_id == 0:
+                raise Exception("Invalid response from database: No lobby waiting password")
+
+            join_data = {
+                "command": "join_lobby",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "player_id": player_id,
+                    "password": password
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            db_response = await self.kafka.request_to_db(join_data, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'success' not in db_response:
+                raise Exception("Invalid response from database")
+
+            if not db_response['success']:
+                error_msg = db_response.get('error', 'Unknown error')
+                if error_msg == "DBAnswerInvalidPassword":
+                    await message.answer(
+                        phrases.dict("wrongPassword", lang),
+                        reply_markup=kb.game[lang]
+                    )
+                    await self.change_player(message, state, PlayerStates.choose_game)
+                    return False
+                else:
+                    await message.answer(phrases.dict(error_msg, lang), reply_markup=kb.game[lang])
+                    await self.change_player(message, state, PlayerStates.choose_game)
+                    return False
+
+            game_id = db_response.get('id', 0)
+            if game_id == 0:
+                await self.change_player(message, state, PlayerStates.choose_game)
+                return False
+
+            ok = await self._add_player_to_game(game_id, player_id)
+            if not ok:
+                await self.change_player(message, state, PlayerStates.choose_game)
+                return False
+
+            await self.change_player(message, state, PlayerStates.in_lobby)
+            await message.answer(
+                phrases.dict("youEnteredLobby", lang),
+                reply_markup=kb.get_lobby_keyboard(False, False, lang)
+            )
+
+            return True
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
+
+        except Exception as e:
+            msg = f"Failed to enter lobby with password for user {player_id}: {str(e)}"
+            await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
+
+        await self.change_player(message, state, PlayerStates.choose_game)
+        return False
+
+    async def enter_to_random_lobby(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        player_id = message.from_user.id
+        lang = self.langs.get(player_id, "en")
+
+        try:
+            get_random_lobby_msg = {
+                "command": "get_random_lobby_id",
+                "data": SERVER_ID,
+                "timestamp": str(datetime.now())
+            }
+
+            db_response = await self.kafka.request_to_db(get_random_lobby_msg, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'id' not in db_response:
+                raise Exception("Invalid response from database: missing lobby ID")
+
+            lobby_id = db_response['id']
+
+            if lobby_id == 0:
+                await message.answer(
+                    phrases.dict("noPublicLobbies", lang),
+                    reply_markup=kb.game[lang]
+                )
+                await self.change_player(message, state, PlayerStates.choose_game)
+                return True
+
+            return await self._enter_by_lobby_id(player_id, lobby_id)
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            await self.handle_error(player_id, Error(ErrorLevel.WARNING, msg))
+
+        except Exception as e:
+            msg = f"Failed to enter random lobby for user {player_id}: {str(e)}"
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
 
         return False

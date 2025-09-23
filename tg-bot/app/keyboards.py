@@ -7,6 +7,8 @@ game = dict()
 bot = dict()
 lang = dict()
 full_game = dict()
+lobby = dict()
+lobby_types = dict()
 
 def create_keyboards():
     for _lang in phrases.langs():
@@ -41,6 +43,52 @@ def create_keyboards():
             one_time_keyboard=True
         )
 
+        lobby[_lang] = list()
+        lobby[_lang].append(ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('ready', _lang))],
+                [KeyboardButton(text=phrases.dict('leaveLobby', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        ))
+        lobby[_lang].append(ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('notReady', _lang))],
+                [KeyboardButton(text=phrases.dict('leaveLobby', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        ))
+        lobby[_lang].append(ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('startGame', _lang))],
+                [KeyboardButton(text=phrases.dict('ready', _lang))],
+                [KeyboardButton(text=phrases.dict('leaveLobby', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        ))
+        lobby[_lang].append(ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('startGame', _lang))],
+                [KeyboardButton(text=phrases.dict('notReady', _lang))],
+                [KeyboardButton(text=phrases.dict('leaveLobby', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        ))
+
+        lobby_types[_lang] = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('enterByLobbyId', _lang))],
+                [KeyboardButton(text=phrases.dict('enterRandomPublicLobby', _lang))],
+                [KeyboardButton(text=phrases.dict('back', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+
         full_game[_lang] = InlineKeyboardMarkup(
             inline_keyboard=[
                 [ InlineKeyboardButton(text=phrases.dict('fullGame', _lang), callback_data="full_game"), ],
@@ -57,3 +105,7 @@ def create_keyboards():
             resize_keyboard=True,
             one_time_keyboard=True
         )
+
+
+def get_lobby_keyboard(isHost, isReady, _lang):
+    return lobby[_lang][isHost * 2 + isReady]
