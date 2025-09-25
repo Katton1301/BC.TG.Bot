@@ -81,7 +81,11 @@
         "leaveLobby": "Покинуть лобби",
         "enterByLobbyId": "Войти в лобби по ID",
         "enterRandomPublicLobby": "Войти в публичный лобби",
-        "youEnteredLobby": "Вы вошли в лобби"
+        "youEnteredLobby": "Вы вошли в лобби",
+        "youReady": "Вы готовы играть!",
+        "youNotReady": "Вы пока не готовы сыграть!",
+        "playerIsReady": "готов",
+        "playerIsNotReady": "не готов"
     },
     "en": {
         "name": "English",
@@ -165,6 +169,10 @@
         "leaveLobby": "Leavy lobby",
         "enterByLobbyId": "Enter the lobby by ID",
         "enterRandomPublicLobby": "Enter the public lobby",
-        "youEnteredLobby": "You have entered the lobby"
+        "youEnteredLobby": "You have entered the lobby",
+        "youReady": "You are ready to play!",
+        "youNotReady": "You are not ready to play yet!",
+        "playerIsReady": "is ready",
+        "playerIsNotReady": "is not ready"
     }
 }

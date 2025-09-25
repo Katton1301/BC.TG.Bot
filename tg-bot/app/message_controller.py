@@ -129,7 +129,16 @@ class MessageController:
 
     async def state_in_lobby(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
-        await message.answer(phrases.dict("alreadyInLobby", lang))
+        if phrases.checkPhrase("ready", str(message.text)):
+            await self.eh.set_player_ready_state(message, state, True)
+        elif phrases.checkPhrase("notReady", str(message.text)):
+            await self.eh.set_player_ready_state(message, state, False)
+        elif phrases.checkPhrase("leaveLobby", str(message.text)):
+            await self.eh.leave_lobby(message, state)
+        elif phrases.checkPhrase("startGame", str(message.text)):
+            await self.eh.start_lobby_game(message, state)
+        else:
+            await message.answer(phrases.dict("chooseMenuItem", lang))
 
     async def state_choose_lobby_type(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]

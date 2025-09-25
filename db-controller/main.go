@@ -121,6 +121,12 @@ type CurrentPlayersResponse struct {
     PlayerIds     []int64 `json:"player_ids"`
 }
 
+type LobbyPlayersResponse struct {
+    CorrelationId string            `json:"correlation_id"`
+    LobbyId       int64             `json:"lobby_id"`
+    Players       []LobbyPlayerData `json:"players"`
+}
+
 type LobbyData struct {
     ID          int64  `json:"id"`
     ServerId    int64  `json:"server_id"`
@@ -498,6 +504,14 @@ func main() {
                     continue
                 }
                 err = handleGetLobbyId(conn, kafkaMsg.CorrelationId, player_id)
+
+            case "get_lobby_players":
+                var lobby_id int64
+                if err := json.Unmarshal(kafkaMsg.Data, &lobby_id); err != nil {
+                    log.Printf("Failed to parse lobby id: %v", err)
+                    continue
+                }
+                err = handleGetLobbyPlayers(conn, kafkaMsg.CorrelationId, lobby_id)
 
   // another commands
 
@@ -1238,7 +1252,7 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
 
     var hostId int64
     err = tx.QueryRow(context.Background(),
-        `SELECT host_id, current_players FROM lobbies WHERE id = $1`,
+        `SELECT host_id FROM lobbies WHERE id = $1`,
         lobbyPlayerData.LobbyId).Scan(&hostId)
 
     if err != nil {
@@ -1341,7 +1355,7 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyPlayerData
 
     var lobby LobbyData
     err = tx.QueryRow(context.Background(),
-        `SELECT id, server_id, creator_id, is_private, status, created_at
+        `SELECT id, server_id, host_id, is_private, status
          FROM lobbies WHERE id = $1`,
         lobbyPlayerData.LobbyId).Scan(
             &lobby.ID, &lobby.ServerId, &lobby.HostId, &lobby.IsPrivate, &lobby.Status)
@@ -1768,7 +1782,7 @@ func handleGetRandomLobbyId(conn *pgx.Conn, correlationId string, serverId int64
 func handleGetLobbyId(conn *pgx.Conn, correlationId string, player_id int64) error {
     var lobbyId int64
     err := conn.QueryRow(context.Background(),
-        `SELECT lobby_id FROM lobby_players WHERE player_id = $1 AND access = false LIMIT 1`,
+        `SELECT lobby_id FROM lobby_players WHERE player_id = $1 LIMIT 1`,
         player_id).Scan(&lobbyId)
 
     if err != nil {
@@ -1801,5 +1815,51 @@ func handleGetLobbyId(conn *pgx.Conn, correlationId string, player_id int64) err
     }
 
     log.Printf("Sent lobby ID %d for player_id %d", lobbyId, player_id)
+    return nil
+}
+
+func handleGetLobbyPlayers(conn *pgx.Conn, correlationId string, lobby_id int64) error {
+    var players []LobbyPlayerData
+
+    rows, err := conn.Query(context.Background(),
+        `SELECT lobby_id, player_id, is_ready, joined_at, host, access
+         FROM lobby_players
+         WHERE lobby_id = $1 AND access = true`,
+        lobby_id)
+    if err != nil {
+        return fmt.Errorf("failed to query lobby players: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var player LobbyPlayerData
+        if err := rows.Scan(&player.LobbyId, &player.PlayerId, &player.IsReady, &player.JoinedAt, &player.Host, &player.Access); err != nil {
+            return fmt.Errorf("failed to scan lobby player: %w", err)
+        }
+        players = append(players, player)
+    }
+
+    response := LobbyPlayersResponse{
+        CorrelationId: correlationId,
+        LobbyId:       lobby_id,
+        Players:       players,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal lobby players response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send lobby players response: %w", err)
+    }
+
+    log.Printf("Sent lobby players for lobby_id %d: %d players", lobby_id, len(players))
     return nil
 }
