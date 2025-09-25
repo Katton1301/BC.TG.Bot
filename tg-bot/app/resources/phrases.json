@@ -82,10 +82,19 @@
         "enterByLobbyId": "Войти в лобби по ID",
         "enterRandomPublicLobby": "Войти в публичный лобби",
         "youEnteredLobby": "Вы вошли в лобби",
+        "youInLobby": "Вы в лобби",
         "youReady": "Вы готовы играть!",
+        "playersState" : "Состояние игроков",
         "youNotReady": "Вы пока не готовы сыграть!",
         "playerIsReady": "готов",
-        "playerIsNotReady": "не готов"
+        "playerIsNotReady": "не готов",
+        "playerLeftLobby": "покинул лобби",
+        "DBAnswerLobbyNotFound": "Лобби не найдено",
+        "DBAnswerLobbyCannotStartGameInCurrentStatus": "Нельзя начать игру при текущем статусе лобби",
+        "DBAnswerNotAllPlayersAreReady": "Не все игроки готовы к игре",
+        "DBAnswerNoPlayersInLobby": "В лобби нет игроков",
+        "DBAnswerOnlyHostCanStartGame": "Только хост может начать игру",
+        "DBAnswerLobbyIsntAcceptingPlayers": "Это Лобби не принимает игроков на данный момент"
     },
     "en": {
         "name": "English",
@@ -170,9 +179,18 @@
         "enterByLobbyId": "Enter the lobby by ID",
         "enterRandomPublicLobby": "Enter the public lobby",
         "youEnteredLobby": "You have entered the lobby",
+        "youInLobby": "You are in the lobby!",
         "youReady": "You are ready to play!",
+        "playersState": "Players state",
         "youNotReady": "You are not ready to play yet!",
         "playerIsReady": "is ready",
-        "playerIsNotReady": "is not ready"
+        "playerIsNotReady": "is not ready",
+        "playerLeftLobby": "left the lobby",
+        "DBAnswerLobbyNotFound": "Lobby not found",
+        "DBAnswerLobbyCannotStartGameInCurrentStatus": "Cannot start game in current lobby status",
+        "DBAnswerNotAllPlayersAreReady": "Not all players are ready to play",
+        "DBAnswerNoPlayersInLobby": "No players in lobby",
+        "DBAnswerOnlyHostCanStartGame": "Only host can start the game",
+        "DBAnswerLobbyIsntAcceptingPlayers": "This lobby is not accepting players at the moment."
     }
 }
