@@ -7,6 +7,7 @@ import (
   "log"
   "math/rand"
   "os"
+  "strconv"
   "time"
   "strings"
 
@@ -15,6 +16,7 @@ import (
 )
 
 var computerNames map[string][]string
+var lobbyPlayerLimit int
 
 type PlayerData struct {
   ID   int64  `json:"player_id"`
@@ -144,6 +146,7 @@ type LobbyPlayerData struct {
     JoinedAt   time.Time `json:"joined_at"`
     Host      bool   `json:"host"`
     Access    bool   `json:"access"`
+    InLobby   bool   `json:"in_lobby"`
 }
 
 type KafkaMessage struct {
@@ -191,6 +194,25 @@ func loadComputerNames() error {
     return nil
 }
 
+func loadLobbyPlayerLimit() {
+    limitStr := os.Getenv("LOBBY_PLAYER_LIMIT")
+    if limitStr == "" {
+        lobbyPlayerLimit = 10 // Default limit
+        log.Printf("LOBBY_PLAYER_LIMIT not set, using default: %d", lobbyPlayerLimit)
+        return
+    }
+
+    limit, err := strconv.Atoi(limitStr)
+    if err != nil || limit <= 0 {
+        lobbyPlayerLimit = 10 // Default limit on invalid value
+        log.Printf("Invalid LOBBY_PLAYER_LIMIT value '%s', using default: %d", limitStr, lobbyPlayerLimit)
+        return
+    }
+
+    lobbyPlayerLimit = limit
+    log.Printf("Lobby player limit set to: %d", lobbyPlayerLimit)
+}
+
 func readSecret(filePath string) (string, error) {
     data, err := os.ReadFile(filePath)
     if err != nil {
@@ -235,6 +257,8 @@ func main() {
     if err := loadComputerNames(); err != nil {
         log.Fatalf("failed to load computer names: %w", err)
     }
+
+    loadLobbyPlayerLimit()
 
     err = checkAndCreateTables(conn)
     if err != nil {
@@ -482,12 +506,12 @@ func main() {
                 err = handleSetPlayerReady(conn, lobbyPlayerData)
 
             case "start_lobby_game":
-                var lobbyPlayerData LobbyPlayerData
-                if err := json.Unmarshal(kafkaMsg.Data, &lobbyPlayerData); err != nil {
+                var lobbyData LobbyData
+                if err := json.Unmarshal(kafkaMsg.Data, &lobbyData); err != nil {
                     log.Printf("Failed to parse lobby id: %v", err)
                     continue
                 }
-                err = handleStartLobbyGame(conn, kafkaMsg.CorrelationId, lobbyPlayerData)
+                err = handleStartLobbyGame(conn, kafkaMsg.CorrelationId, lobbyData)
 
             case "get_random_lobby_id":
                 var server_id int64
@@ -672,17 +696,22 @@ func handleCreateGame(conn *pgx.Conn, correlation_id string, game GameData) erro
 }
 
 func handleUpdateGame(conn *pgx.Conn, game GameData) error {
-  var err error
-  if game.SecretValue == 0 {
-  _, err = conn.Exec(context.Background(),
+    tx, err := conn.Begin(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+    defer tx.Rollback(context.Background())
+
+    if game.SecretValue == 0 {
+    _, err = tx.Exec(context.Background(),
     `UPDATE games SET
     server_id = $2,
     stage = $3,
     step = $4
     WHERE id = $1`,
     game.ID, game.ServerId, game.Stage, game.Step)
-  } else {
-  _, err = conn.Exec(context.Background(),
+    } else {
+    _, err = tx.Exec(context.Background(),
     `UPDATE games SET
     server_id = $2,
     stage = $3,
@@ -690,13 +719,46 @@ func handleUpdateGame(conn *pgx.Conn, game GameData) error {
     secret_value = $5
     WHERE id = $1`,
     game.ID, game.ServerId, game.Stage, game.Step, game.SecretValue)
-  }
-  if err != nil {
-  return fmt.Errorf("failed to update game: %w", err)
-  }
+    }
+    if err != nil {
+    return fmt.Errorf("failed to update game: %w", err)
+    }
 
-  log.Printf("Updated game with id %d", game.ID)
-  return nil
+    if game.Stage == "FINISHED" {
+        var gameMode string
+        err = tx.QueryRow(context.Background(),
+            `SELECT mode FROM games WHERE id = $1`,
+            game.ID).Scan(&gameMode)
+        if err != nil {
+            return fmt.Errorf("failed to query game mode: %w", err)
+        }
+
+        if gameMode == "lobby" {
+            _, err = tx.Exec(context.Background(),
+            `UPDATE lobbies SET status = 'FINISHED' WHERE game_id = $1`,
+            game.ID)
+            if err != nil {
+            return fmt.Errorf("failed to update lobby status: %w", err)
+            }
+            log.Printf("Updated lobby status to FINISHED for game %d", game.ID)
+
+            _, err = tx.Exec(context.Background(),
+            `UPDATE lobby_players SET is_ready = false, in_lobby = false
+                WHERE lobby_id = (SELECT id FROM lobbies WHERE game_id = $1)`,
+            game.ID)
+            if err != nil {
+            return fmt.Errorf("failed to reset player ready states and in_lobby: %w", err)
+            }
+            log.Printf("Reset all player ready states to false and in_lobby to false for lobby with game %d", game.ID)
+        }
+    }
+
+    if err := tx.Commit(context.Background()); err != nil {
+        return fmt.Errorf("failed to commit transaction: %w", err)
+    }
+
+    log.Printf("Updated game with id %d", game.ID)
+    return nil
 }
 
 func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer ComputerGameData) error {
@@ -1122,9 +1184,9 @@ func handleCreateLobby(conn *pgx.Conn, correlation_id string, lobby LobbyData) e
     }
 
     _, err = conn.Exec(context.Background(),
-        `INSERT INTO lobby_players(lobby_id, player_id, is_ready, joined_at, host, access)
-        VALUES($1, $2, $3, $4, $5, $6)`,
-        newID, lobby.HostId, false, time.Now(), true, true)
+        `INSERT INTO lobby_players(lobby_id, player_id, is_ready, joined_at, host, access, in_lobby)
+        VALUES($1, $2, $3, $4, $5, $6, $7)`,
+        newID, lobby.HostId, false, time.Now(), true, true, true)
 
     if err != nil {
         return fmt.Errorf("failed to add creator to lobby: %w", err)
@@ -1187,8 +1249,17 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
         }
     }
 
-    if lobby.Status != "WAITING" {
+    if lobby.Status == "STARTED" {
         return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyIsntAcceptingPlayers")
+    }
+
+    var playerCount int
+    err = tx.QueryRow(context.Background(),
+        `SELECT COUNT(*) FROM lobby_players WHERE lobby_id = $1 AND access = true`,
+        joinData.LobbyId).Scan(&playerCount)
+
+    if err != nil {
+        return fmt.Errorf("failed to check lobby player count: %w", err)
     }
 
     var existingPlayer int64
@@ -1199,20 +1270,34 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
 
     if err == nil {
         if hasAccess && !existingAccess {
+            if playerCount >= lobbyPlayerLimit {
+                return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyIsFull")
+            }
             _, err = tx.Exec(context.Background(),
-                `UPDATE lobby_players SET access = true WHERE lobby_id = $1 AND player_id = $2`,
+                `UPDATE lobby_players SET access = true, in_lobby = true WHERE lobby_id = $1 AND player_id = $2`,
                 joinData.LobbyId, joinData.PlayerId)
             if err != nil {
                 return fmt.Errorf("failed to update player access: %w", err)
             }
-            log.Printf("Updated player %d access to true in lobby %d", joinData.PlayerId, joinData.LobbyId)
+            log.Printf("Updated player %d access to true and in_lobby to true in lobby %d", joinData.PlayerId, joinData.LobbyId)
+        } else if existingAccess {
+            _, err = tx.Exec(context.Background(),
+                `UPDATE lobby_players SET in_lobby = true WHERE lobby_id = $1 AND player_id = $2`,
+                joinData.LobbyId, joinData.PlayerId)
+            if err != nil {
+                return fmt.Errorf("failed to update player in_lobby: %w", err)
+            }
+            log.Printf("Updated player %d in_lobby to true in lobby %d", joinData.PlayerId, joinData.LobbyId)
         }
     } else {
         if err == pgx.ErrNoRows {
+            if hasAccess && playerCount >= lobbyPlayerLimit {
+                return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyIsFull")
+            }
             _, err = tx.Exec(context.Background(),
-                `INSERT INTO lobby_players(lobby_id, player_id, is_ready, joined_at, host, access)
-                VALUES($1, $2, $3, $4, $5, $6)`,
-                joinData.LobbyId, joinData.PlayerId, false, time.Now(), false, hasAccess)
+                `INSERT INTO lobby_players(lobby_id, player_id, is_ready, joined_at, host, access, in_lobby)
+                VALUES($1, $2, $3, $4, $5, $6, $7)`,
+                joinData.LobbyId, joinData.PlayerId, false, time.Now(), false, hasAccess, hasAccess)
 
             if err != nil {
                 return fmt.Errorf("failed to add player to lobby: %w", err)
@@ -1362,7 +1447,7 @@ func handleSetPlayerReady(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error
     return nil
 }
 
-func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyPlayerData LobbyPlayerData) error {
+func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyDataIn LobbyData) error {
     tx, err := conn.Begin(context.Background())
     if err != nil {
         return fmt.Errorf("failed to begin transaction: %w", err)
@@ -1373,24 +1458,24 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyPlayerData
     err = tx.QueryRow(context.Background(),
         `SELECT id, server_id, host_id, game_id, is_private, status
          FROM lobbies WHERE id = $1`,
-        lobbyPlayerData.LobbyId).Scan(
+        lobbyDataIn.ID).Scan(
             &lobby.ID, &lobby.ServerId, &lobby.HostId, &lobby.GameId, &lobby.IsPrivate, &lobby.Status)
 
     if err != nil {
         return fmt.Errorf("failed to query lobby: %w", err)
     }
 
-    if lobby.HostId != lobbyPlayerData.PlayerId {
+    if lobby.HostId != lobbyDataIn.HostId {
         return sendAnswerResponse(correlation_id, false, "DBAnswerOnlyHostCanStartGame")
     }
 
-    if lobby.Status != "WAITING" {
+    if lobby.Status == "STARTED" {
         return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyCannotStartGameInCurrentStatus")
     }
 
     rows, err := tx.Query(context.Background(),
         `SELECT player_id, is_ready FROM lobby_players WHERE lobby_id = $1`,
-        lobbyPlayerData.LobbyId)
+        lobbyDataIn.ID)
 
     if err != nil {
         return fmt.Errorf("failed to query lobby players: %w", err)
@@ -1420,8 +1505,8 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyPlayerData
     }
 
     _, err = tx.Exec(context.Background(),
-        `UPDATE lobbies SET status = 'STARTED' WHERE id = $1`,
-        lobbyPlayerData.LobbyId)
+        `UPDATE lobbies SET status = 'STARTED', game_id = $1 WHERE id = $2`,
+        lobbyDataIn.GameId, lobbyDataIn.ID)
 
     if err != nil {
         return fmt.Errorf("failed to update lobby status: %w", err)
@@ -1434,7 +1519,7 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyPlayerData
     response := AnswerResponse{
         CorrelationId: correlation_id,
         Success:       true,
-        ID:            lobby.GameId,
+        ID:            lobbyDataIn.GameId,
         Error:         "",
     }
 
@@ -1450,7 +1535,7 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyPlayerData
     }, nil)
 
     log.Printf("Host player %d started game %d from lobby %d with %d players",
-        lobbyPlayerData.PlayerId, lobby.GameId, lobbyPlayerData.LobbyId, len(players))
+        lobby.HostId, lobby.GameId, lobby.ID, len(players))
     return err
 }
 
@@ -1635,7 +1720,8 @@ func checkAndCreateTables(conn *pgx.Conn) error {
                 is_ready BOOLEAN,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 host BOOLEAN,
-                access BOOLEAN DEFAULT false
+                access BOOLEAN DEFAULT false,
+                in_lobby BOOLEAN DEFAULT false
             )`)
         if err != nil {
             return err
@@ -1813,7 +1899,7 @@ func handleGetLobbyPlayers(conn *pgx.Conn, correlationId string, lobby_id int64)
     var players []LobbyPlayerData
 
     rows, err := conn.Query(context.Background(),
-        `SELECT lobby_id, player_id, is_ready, joined_at, host, access
+        `SELECT lobby_id, player_id, is_ready, joined_at, host, access, in_lobby
          FROM lobby_players
          WHERE lobby_id = $1 AND access = true`,
         lobby_id)
@@ -1824,7 +1910,7 @@ func handleGetLobbyPlayers(conn *pgx.Conn, correlationId string, lobby_id int64)
 
     for rows.Next() {
         var player LobbyPlayerData
-        if err := rows.Scan(&player.LobbyId, &player.PlayerId, &player.IsReady, &player.JoinedAt, &player.Host, &player.Access); err != nil {
+        if err := rows.Scan(&player.LobbyId, &player.PlayerId, &player.IsReady, &player.JoinedAt, &player.Host, &player.Access, &player.InLobby); err != nil {
             return fmt.Errorf("failed to scan lobby player: %w", err)
         }
         players = append(players, player)

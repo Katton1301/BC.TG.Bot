@@ -703,16 +703,16 @@ class EventHandler:
                 logger.info(f"Player {player_id} give up in game {game_id}")
 
             names = await self._get_game_names(player_id, game_id)
-            if names is None:
-                return False
+            if names is None: return False
 
             ok = await self._send_give_up_to_other_players(steps[player_i], lang, names)
             if not ok: return False
 
             if game_response['game_stage'] == 'FINISHED':
-                return await self._send_game_results(player_id, game_id, lang, names)
+                ok = await self._finish_game(player_id, game_id, names, False)
+                if not ok: return False
             elif steps[player_i]['finished'] and unfinished_players == 0:
-                ok = await self._finish_game(player_id, game_id, names)
+                ok = await self._finish_game(player_id, game_id, names, True)
                 if not ok: return False
 
             ok = await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
@@ -730,43 +730,45 @@ class EventHandler:
 
         return False
 
-    async def _finish_game(self, player_id, game_id, names):
+    async def _finish_game(self, player_id, game_id, names, force):
+        lang = self.langs.get(player_id, "en")
         try:
-            lang = self.langs.get(player_id, "en")
-            game_msg = {
-                "command": 15,  # Assuming 15 is FINISH_GAME command
-                "server_id": SERVER_ID,
-                "player_id": player_id,
-                "game_id": game_id,
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
-                return False
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid do step response from game service")
-
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                raise Exception(f"Game service error: {game_response['result']}")
-
-            steps = game_response['steps']
-            ok = await self._save_computer_steps(steps, player_id, game_id)
-            if not ok: return False
-
-            max_step = max(step['step'] for step in steps)
-            update_game_message = {
-                "command": "update_game",
-                "data": {
-                    "id": game_id,
+            if force:
+                game_msg = {
+                    "command": 15,  # Assuming 15 is FINISH_GAME command
                     "server_id": SERVER_ID,
-                    "stage": game_response["game_stage"],
-                    "step": max_step,
-                    "secret_value": 0,
-                    "mode": "unchangeable",
-                },
-                "timestamp": str(datetime.now())
-            }
-            await self.kafka.send_to_db(update_game_message)
-            logger.info(f"Game {game_id} force finish")
+                    "player_id": player_id,
+                    "game_id": game_id,
+                }
+                game_response = await self.kafka.request_to_game(game_msg, timeout=5)
+                if not await self._verify_server_response(game_response, player_id):
+                    return False
+                if not game_response or 'result' not in game_response:
+                    raise Exception("Invalid do step response from game service")
+
+                if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
+                    raise Exception(f"Game service error: {game_response['result']}")
+
+                steps = game_response['steps']
+                ok = await self._save_computer_steps(steps, player_id, game_id)
+                if not ok: return False
+
+                max_step = max(step['step'] for step in steps)
+                update_game_message = {
+                    "command": "update_game",
+                    "data": {
+                        "id": game_id,
+                        "server_id": SERVER_ID,
+                        "stage": game_response["game_stage"],
+                        "step": max_step,
+                        "secret_value": 0,
+                        "mode": "unchangeable",
+                    },
+                    "timestamp": str(datetime.now())
+                }
+                await self.kafka.send_to_db(update_game_message)
+                logger.info(f"Game {game_id} force finish")
+
             return await self._send_game_results(player_id, game_id, lang, names)
 
         except asyncio.TimeoutError:
@@ -781,7 +783,6 @@ class EventHandler:
 
     async def _send_game_results(self, player_id, game_id, lang, names):
         try:
-
             get_current_players_msg = {
                 "command": "get_current_players",
                 "data": game_id,
@@ -813,11 +814,14 @@ class EventHandler:
             player_i = next((i for i, step in enumerate(game_result) if step['player'] and step['id'] == player_id), -1)
             if player_i == -1:
                 raise Exception(f"Game service not have this player for game result")
-
+            lobby_id = await self._get_lobby_id(player_id)
             for i in range(len(game_result)):
                 if game_result[i]['player'] and game_result[i]['id'] in current_player_ids:
                     result = self._generate_game_results(game_result, i, lang, names)
-                    await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.full_game[lang] )
+                    if lobby_id == 0:
+                        await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.full_game_menu[lang] )
+                    else:
+                        await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.full_game_menu_with_lobby[lang] )
 
         except asyncio.TimeoutError:
             lang = self.langs.get(player_id, "en")
@@ -832,14 +836,16 @@ class EventHandler:
 
     async def _send_players_states(self, player_id, lobby_id, lobby_players, lobby_names):
         try:
-            for player in lobby_players:
+            active_lobby_players = [player for player in lobby_players if player.get('in_lobby', False)]
+
+            for player in active_lobby_players:
                 player_lang = self.langs.get(player['player_id'], "en")
 
                 state_msg = f"{phrases.dict('youInLobby', player_lang)}\n"
                 state_msg += f"{phrases.dict('lobbyId', player_lang)} - {lobby_id}\n"
                 state_msg += f"{phrases.dict('playersState', player_lang)}:\n"
 
-                for p in lobby_players:
+                for p in active_lobby_players:
                     if p['player_id'] == player['player_id']:
                         name = phrases.dict('you', player_lang)
                     else:
@@ -879,7 +885,7 @@ class EventHandler:
         try:
             leaving_player_name = "Player"
             if lobby_names:
-                leaving_player_name = next((n['name'] for n in lobby_names if n['id'] == player_id), "Player")
+                leaving_player_name = next((n['name'] for n in lobby_names if n['id'] == leaving_player_id), "Player")
 
             for player in lobby_players:
                 if player['player_id'] == leaving_player_id:
@@ -889,6 +895,10 @@ class EventHandler:
 
                 leave_msg = f"{leaving_player_name} {phrases.dict('playerLeftLobby', player_lang)}"
                 try:
+                    current_player = next((p for p in lobby_players if p['player_id'] == player['player_id']), None)
+                    is_host = current_player['host'] if current_player else False
+                    is_ready = current_player['is_ready'] if current_player else False
+
                     await self.bot.send_message(
                         chat_id=player['player_id'],
                         text=leave_msg,
@@ -897,7 +907,7 @@ class EventHandler:
                 except Exception as e:
                     logger.warning(f"Failed to send leave notification to player {player['player_id']}: {e}")
 
-            ok = await self._send_players_states(self, player_id, lobby_id, lobby_players, lobby_names)
+            ok = await self._send_players_states(leaving_player_id, lobby_id, lobby_players, lobby_names)
             if not ok: return False
 
             return True
@@ -1172,9 +1182,10 @@ class EventHandler:
         player_step = steps[player_i]
         game_value = player_step["game_value"]
         result += f"{phrases.dict('step', lang)} {step_number}"
-        cur_steps = [d for d in steps if d['step'] == step_number and d['id'] != player_step['id']]
+        cur_steps = [d for d in steps if (d['step'] == step_number and d['id'] != player_step['id'])]
         if len(cur_steps) > 0:
-            result += f"\n{phrases.dict("you", lang)} -  {game_value:04}: {player_step["bulls"]}{phrases.dict("bulls", lang)} {player_step["cows"]}{phrases.dict("cows", lang)}"
+            if step_number == player_step['step']:
+                result += f"\n{phrases.dict("you", lang)} -  {game_value:04}: {player_step["bulls"]}{phrases.dict("bulls", lang)} {player_step["cows"]}{phrases.dict("cows", lang)}"
             for i in range(len(cur_steps)):
                 name = next((d['name'] for d in names if d['id'] == cur_steps[i]['id'] and d['is_player'] == cur_steps[i]['player']), "Unknown")
                 if cur_steps[i]["player"]:
@@ -1340,7 +1351,7 @@ class EventHandler:
                     await self.change_player_state_by_id(player_id, PlayerStates.enter_password)
                     await self.bot.send_message(
                         chat_id=player_id,
-                        text=phrases.dict("enterLobbyPassword", lang),
+                        text=f"{phrases.dict("enterLobbyPassword", lang)} {phrases.dict("useOnlyDigits", lang)}",
                         reply_markup=ReplyKeyboardRemove()
                     )
                     return True
@@ -1348,15 +1359,9 @@ class EventHandler:
                     await self.bot.send_message(
                         chat_id=player_id,
                         text=phrases.dict(error_msg, lang),
-                        reply_markup=kb.game[lang]
+                        reply_markup=ReplyKeyboardRemove()
                     )
                     return False
-
-            game_id = db_response.get('id', 0)
-            if game_id == 0: return False
-
-            ok = await self._add_player_to_game(game_id, player_id)
-            if not ok: return False
 
             await self.change_player_state_by_id(player_id, PlayerStates.in_lobby)
             await self.bot.send_message(
@@ -1415,7 +1420,6 @@ class EventHandler:
             await self.handle_error(player_id, Error(ErrorLevel.ERROR, msg))
 
         return 0
-
 
     async def do_step(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
@@ -1546,12 +1550,10 @@ class EventHandler:
                         result = self._generate_steps_result(steps, i, lang, names, step_number)
                         await self.bot.send_message( chat_id=steps[i]['id'], text=result, reply_markup=ReplyKeyboardRemove() )
 
-
             if game_response['game_stage'] == 'FINISHED':
-                return await self._send_game_results(player_id, game_id, lang, names)
+                return await self._finish_game(player_id, game_id, names, False)
             elif steps[player_i]['finished'] and unfinished_players == 0:
-                ok = await self._finish_game(player_id, game_id, names)
-                if not ok: return False
+                return await self._finish_game(player_id, game_id, names, True)
             return True
 
         except asyncio.TimeoutError:
@@ -1768,41 +1770,109 @@ class EventHandler:
 
         return False
 
-
-    async def create_lobby(self, message: types.Message, state: FSMContext):
+    async def stay_in_lobby(self, callback: types.CallbackQuery, state: FSMContext):
         if not self.server_available:
-            await self._handle_server_unavailable(message.from_user.id)
+            await self._handle_server_unavailable(callback.from_user.id)
             return False
-
-        lang = self.langs.get(message.from_user.id, "en")
-        await self.change_player(message, state, PlayerStates.wait_password)
-        await message.answer(
-            phrases.dict("enterLobbyPassword", lang),
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return True
-
-    async def create_lobby_with_password(self, message: types.Message, state: FSMContext):
-        if not self.server_available:
-            await self._handle_server_unavailable(message.from_user.id)
-            return False
-
-        player_id = message.from_user.id
-        password = message.text
-        lang = self.langs.get(player_id, "en")
 
         try:
-            game_id = await self._create_game(player_id, "lobby")
-            if game_id == 0:
+            player_id = callback.from_user.id
+            lang = self.langs.get(player_id, "en")
+
+            lobby_id = await self._get_lobby_id(player_id)
+            if lobby_id == 0:
+                await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict("youAreNotInLobby", lang),
+                    reply_markup=kb.main[lang]
+                )
                 return False
 
+            stay_in_lobby_msg = {
+                "command": "join_lobby",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "player_id": player_id,
+                    "password": ""
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            db_response = await self.kafka.request_to_db(stay_in_lobby_msg, timeout=5)
+            if "timeout" in db_response and db_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not db_response or 'success' not in db_response:
+                raise Exception("Invalid response from database when staying in lobby")
+
+            if not db_response['success']:
+                error_msg = db_response.get('error', 'Unknown error')
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict(error_msg, lang),
+                    reply_markup=kb.main[lang]
+                )
+                return False
+
+
+            lobby_players = await self._get_lobby_players(player_id, lobby_id)
+            if lobby_players is None: return False
+
+            lobby_names = await self._get_lobby_names(player_id, lobby_id)
+            if lobby_names is None: return False
+
+            current_player = next((p for p in lobby_players if p['player_id'] == player_id), None)
+            if not current_player:
+                await self.change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict("youAreNotInLobby", lang),
+                    reply_markup=kb.main[lang]
+                )
+                return False
+
+            await self.change_player_state_by_id(player_id, PlayerStates.in_lobby)
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=phrases.dict("youBackLobby", lang),
+                reply_markup=kb.get_lobby_keyboard(current_player['host'], current_player['is_ready'], lang)
+            )
+
+            await self._send_players_states(player_id, lobby_id, lobby_players, lobby_names)
+
+            return True
+
+        except asyncio.TimeoutError:
+            lang = self.langs.get(callback.from_user.id, "en")
+            msg = phrases.dict("errorTimeout", lang)
+            await self.handle_error(callback.from_user.id, Error(ErrorLevel.WARNING, msg))
+
+        except Exception as e:
+            msg = f"Failed to stay in lobby for user {callback.from_user.id}: {str(e)}"
+            await self.handle_error(callback.from_user.id, Error(ErrorLevel.ERROR, msg))
+            await self.change_player_state_by_id(callback.from_user.id, PlayerStates.main_menu_state)
+            await self.bot.send_message(
+                chat_id=callback.from_user.id,
+                text=phrases.dict("menu", self.langs.get(callback.from_user.id, "en")),
+                reply_markup=kb.main[self.langs.get(callback.from_user.id, "en")]
+            )
+
+        return False
+
+    async def _create_lobby(self, player_id, password):
+        if not self.server_available:
+            await self._handle_server_unavailable(player_id)
+            return False
+
+        lang = self.langs.get(player_id, "en")
+        try:
             lobby_data = {
                 "command": "create_lobby",
                 "data": {
                     "id": 0,
                     "server_id": SERVER_ID,
                     "host_id": player_id,
-                    "game_id": game_id,
+                    "game_id": 0,
                     "is_private": bool(password.strip()),
                     "password": password.strip(),
                     "status": "WAITING"
@@ -1822,17 +1892,18 @@ class EventHandler:
             lobby_id = db_response['id']
             logger.info(f"Lobby created with ID: {lobby_id}")
 
-            await self.change_player(message, state, PlayerStates.in_lobby)
+            await self.change_player_state_by_id(player_id, PlayerStates.in_lobby)
             msg = f"{phrases.dict('lobbyCreated', lang)} \n{phrases.dict('lobbyId', lang)} - {lobby_id}"
             if password.strip():
                 msg += f"\n{phrases.dict('lobbyPassword', lang)} - {password}\n{phrases.dict('sendPrivate', lang)}"
             else:
                 msg += f"\n{phrases.dict('lobbyPublic', lang)}"
-            await message.answer(
-                msg,
+
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=msg,
                 reply_markup=kb.get_lobby_keyboard(True, False, lang)
             )
-
             return True
 
         except asyncio.TimeoutError:
@@ -1845,6 +1916,49 @@ class EventHandler:
 
         return False
 
+    async def create_lobby(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        lang = self.langs.get(message.from_user.id, "en")
+        await self.change_player(message, state, PlayerStates.choose_lobby_creation_type)
+        await message.answer(
+            phrases.dict("chooseLobbyCreationType", lang),
+            reply_markup=kb.lobby_creation_types[lang]
+        )
+        return True
+
+    async def create_private_lobby(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        lang = self.langs.get(message.from_user.id, "en")
+        await self.change_player(message, state, PlayerStates.wait_password)
+        await message.answer(
+            f"{phrases.dict("enterLobbyPassword", lang)} {phrases.dict("useOnlyDigits", lang)}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return True
+
+    async def create_lobby_with_password(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        player_id = message.from_user.id
+        password = message.text
+        return await self._create_lobby(player_id, password)
+
+    async def create_public_lobby(self, message: types.Message, state: FSMContext):
+        if not self.server_available:
+            await self._handle_server_unavailable(message.from_user.id)
+            return False
+
+        player_id = message.from_user.id
+        password = ""
+        return await self._create_lobby(player_id, password)
 
     async def enter_lobby(self, message: types.Message, state: FSMContext):
         if not self.server_available:
@@ -1876,6 +1990,14 @@ class EventHandler:
         player_id = message.from_user.id
         password = message.text
         lang = self.langs.get(player_id, "en")
+
+        if not password.isdigit() or len(password) > 10:
+            await message.answer(
+                f"{phrases.dict("invalidPassword", lang)} {phrases.dict("useOnlyDigits", lang)}",
+                reply_markup=kb.game[lang]
+            )
+            await self.change_player(message, state, PlayerStates.choose_game)
+            return False
 
         try:
             lobby_id = await self._get_lobby_id(player_id)
@@ -1910,16 +2032,6 @@ class EventHandler:
                     await message.answer(phrases.dict(error_msg, lang), reply_markup=kb.game[lang])
                     await self.change_player(message, state, PlayerStates.choose_game)
                     return False
-
-            game_id = db_response.get('id', 0)
-            if game_id == 0:
-                await self.change_player(message, state, PlayerStates.choose_game)
-                return False
-
-            ok = await self._add_player_to_game(game_id, player_id)
-            if not ok:
-                await self.change_player(message, state, PlayerStates.choose_game)
-                return False
 
             await self.change_player(message, state, PlayerStates.in_lobby)
             await message.answer(
@@ -2067,7 +2179,7 @@ class EventHandler:
             await self.kafka.send_to_db(leave_msg)
             logger.info(f"Player {player_id} left lobby {lobby_id}")
 
-            lobby_players = await self._get_lobby_players(leaving_player_id, lobby_id)
+            lobby_players = await self._get_lobby_players(player_id, lobby_id)
             if lobby_players is None: return False
 
             ok = await self._send_player_leave_lobby(player_id, lobby_id, lobby_players, lobby_names)
@@ -2095,6 +2207,32 @@ class EventHandler:
             reply_markup=kb.game[lang]
         )
         return False
+
+    async def _start_game_with_players(self, lobby_id, lobby_players):
+        try:
+            host_player = next((p for p in lobby_players if p['host']), None)
+            if not host_player:
+                logger.error(f"No host found in lobby {lobby_id}")
+                return 0
+
+            host_id = host_player['player_id']
+            logger.info(f"Creating game with host {host_id} for lobby {lobby_id}")
+
+            game_id = await self._create_game(host_id, "lobby")
+            if game_id == 0: return 0
+
+            for player in lobby_players:
+                if player['player_id'] != host_id:
+                    ok = await self._add_player_to_game(game_id, player['player_id'])
+                    if not ok: return 0
+                    logger.info(f"Added player {player['player_id']} to game {game_id}")
+
+            logger.info(f"Successfully created game {game_id} with {len(lobby_players)} players")
+            return game_id
+
+        except Exception as e:
+            logger.error(f"Error in start_game_with_players: {str(e)}")
+            return 0
 
     async def start_lobby_game(self, message: types.Message, state: FSMContext):
         if not self.server_available:
@@ -2128,11 +2266,18 @@ class EventHandler:
                 )
                 return False
 
+            lobby_players = await self._get_lobby_players(player_id, lobby_id)
+            if lobby_players is None : return False
+
+            game_id = await self._start_game_with_players(lobby_id, lobby_players)
+            if game_id == 0: return False
+
             start_game_msg = {
                 "command": "start_lobby_game",
                 "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id
+                    "id": lobby_id,
+                    "game_id": game_id,
+                    "host_id": player_id
                 },
                 "timestamp": str(datetime.now())
             }
@@ -2148,9 +2293,6 @@ class EventHandler:
 
             ok = await self._start_game(game_id, player_id)
             if not ok: return False
-
-            lobby_players = await self._get_lobby_players(player_id, lobby_id)
-            if lobby_players is None : return False
 
             for player in lobby_players:
                 ok = await self.change_player_state_by_id(player['player_id'], PlayerStates.waiting_for_number)

@@ -16,7 +16,7 @@ class MessageController:
 
     async def command_start(self, message: types.Message, state: FSMContext):
         await self.eh.insert_player(message, state)
-        lang = self.eh.langs[message.from_user.id]
+        lang = message.from_user.language_code
         await message.answer(phrases.dict("greeting", lang), reply_markup=kb.main[lang])
 
 
@@ -120,11 +120,14 @@ class MessageController:
     async def callback_to_menu(self, callback: types.CallbackQuery, state: FSMContext):
         await self.eh.exit_to_menu(callback, state)
 
+    async def callback_stay_in_lobby(self, callback: types.CallbackQuery, state: FSMContext):
+        await self.eh.stay_in_lobby(callback, state)
+
     async def state_waiting_a_rival(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
         await message.answer(phrases.dict("rivalStillWaiting", lang))
 
-    async def state_wait_password(self, message: types.Message, state: FSMContext):
+    async def state_wait_password_for_lobby(self, message: types.Message, state: FSMContext):
         await self.eh.create_lobby_with_password(message, state)
 
     async def state_in_lobby(self, message: types.Message, state: FSMContext):
@@ -155,6 +158,18 @@ class MessageController:
             await message.answer(phrases.dict("chooseGameMode", lang), reply_markup=kb.game[lang])
         else:
             await message.answer(phrases.dict("chooseMenuItem", lang), reply_markup=kb.lobby_types[lang])
+
+    async def state_choose_lobby_creation_type(self, message: types.Message, state: FSMContext):
+        lang = self.eh.langs[message.from_user.id]
+        if phrases.checkPhrase("createPrivateLobby", str(message.text)):
+            await self.eh.create_private_lobby(message, state)
+        elif phrases.checkPhrase("createPublicLobby", str(message.text)):
+            await self.eh.create_public_lobby(message, state)
+        elif phrases.checkPhrase("back", str(message.text)):
+            await self.eh.change_player(message, state, PlayerStates.choose_game)
+            await message.answer(phrases.dict("chooseGameMode", lang), reply_markup=kb.game[lang])
+        else:
+            await message.answer(phrases.dict("chooseMenuItem", lang), reply_markup=kb.lobby_creation_types[lang])
 
     async def state_enter_lobby_id(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]

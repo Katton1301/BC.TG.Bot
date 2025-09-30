@@ -12,5 +12,6 @@ class PlayerStates(StatesGroup):
     wait_password = State()
     in_lobby = State()
     choose_lobby_type = State()
+    choose_lobby_creation_type = State()
     enter_lobby_id = State()
     enter_password = State()
