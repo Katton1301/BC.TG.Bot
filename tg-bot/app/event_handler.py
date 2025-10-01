@@ -705,8 +705,7 @@ class EventHandler:
             names = await self._get_game_names(player_id, game_id)
             if names is None: return False
 
-            ok = await self._send_give_up_to_other_players(steps[player_i], lang, names)
-            if not ok: return False
+            await self._send_give_up_to_other_players(steps[player_i], lang, names)
 
             if game_response['game_stage'] == 'FINISHED':
                 ok = await self._finish_game(player_id, game_id, names, False)

@@ -1410,9 +1410,15 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
                 _, err = tx.Exec(context.Background(),
                     `UPDATE lobbies SET host_id = $1 WHERE id = $2`,
                     newHostId, lobbyPlayerData.LobbyId)
-
                 if err != nil {
                     return fmt.Errorf("failed to update lobby host: %w", err)
+                }
+
+                _, err := tx.Exec(context.Background(),
+                    `UPDATE lobby_players SET host = true WHERE lobby_id = $1 AND player_id = $2`,
+                lobbyPlayerData.LobbyId, newHostId)
+                if err != nil {
+                    return fmt.Errorf("failed to update lobby player host: %w", err)
                 }
                 log.Printf("Transferred host from player %d to player %d in lobby %d",
                     lobbyPlayerData.PlayerId, newHostId, lobbyPlayerData.LobbyId)
@@ -1474,7 +1480,7 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyDataIn Lob
     }
 
     rows, err := tx.Query(context.Background(),
-        `SELECT player_id, is_ready FROM lobby_players WHERE lobby_id = $1`,
+        `SELECT player_id, is_ready FROM lobby_players WHERE lobby_id = $1 AND access = true`,
         lobbyDataIn.ID)
 
     if err != nil {
@@ -1896,7 +1902,7 @@ func handleGetLobbyId(conn *pgx.Conn, correlationId string, player_id int64) err
 }
 
 func handleGetLobbyPlayers(conn *pgx.Conn, correlationId string, lobby_id int64) error {
-    var players []LobbyPlayerData
+    players := make([]LobbyPlayerData, 0)
 
     rows, err := conn.Query(context.Background(),
         `SELECT lobby_id, player_id, is_ready, joined_at, host, access, in_lobby
@@ -1942,7 +1948,7 @@ func handleGetLobbyPlayers(conn *pgx.Conn, correlationId string, lobby_id int64)
 }
 
 func handleGetLobbyNames(conn *pgx.Conn, correlationId string, lobby_id int64) error {
-    var names []NameData
+    names := make([]NameData, 0)
 
     rows, err := conn.Query(context.Background(),
         `SELECT p.id, p.username
@@ -2007,7 +2013,7 @@ func handleCheckLobbyReady(conn *pgx.Conn, correlationId string, lobby_id int64)
         return fmt.Errorf("failed to query lobby: %w", err)
     }
 
-    if lobby.Status != "WAITING" {
+    if lobby.Status == "STARTED" {
         return sendAnswerResponse(correlationId, false, "DBAnswerLobbyCannotStartGameInCurrentStatus")
     }
 
