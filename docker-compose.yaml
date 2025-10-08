@@ -10,7 +10,7 @@ services:
       - '2181:2181'
     networks:
       - kafka-network
-  
+
   kafka:
     image: 'confluentinc/cp-kafka:7.7.0'
     hostname: kafka
@@ -152,6 +152,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: bc-postgres
+      LOBBY_PLAYER_LIMIT: 10
   tg-bot:
     build:
       context: tg-bot

@@ -6,6 +6,7 @@ class ErrorLevel(Enum):
     INFO = auto()
     WARNING = auto()
     GAME_ERROR = auto()
+    LOBBY_ERROR = auto()
     ERROR = auto()
     CRITICAL = auto()
 
@@ -14,6 +15,7 @@ class Error:
     level: ErrorLevel
     message: str
     game_id: Optional[int] = None
+    lobby_id: Optional[int] = None
 
     def __init__(self, level: ErrorLevel, message: str):
         self.level = level

@@ -18,7 +18,7 @@ services:
     volumes:
       - zk_data:/var/lib/zookeeper/data
       - zk_log:/var/lib/zookeeper/log
-  
+
   kafka:
     image: 'confluentinc/cp-kafka:7.7.0'
     hostname: kafka
@@ -183,6 +183,7 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: bc-postgres
       POSTGRES_PORT: 5432
+      LOBBY_PLAYER_LIMIT: 10
 
   tg-bot:
     image: tg-bot:latest
@@ -216,7 +217,7 @@ services:
       TOPIC_GAME_LISTEN: game_bot
       TOPIC_GAME_SEND: bot_game
     networks:
-      - kafka-network  
+      - kafka-network
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f python.*run.py || exit 1"]
       interval: 30s
