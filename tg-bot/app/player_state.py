@@ -15,3 +15,13 @@ class PlayerStates(StatesGroup):
     choose_lobby_creation_type = State()
     enter_lobby_id = State()
     enter_password = State()
+
+def isFreeState(state: State) -> bool:
+    return state == PlayerStates.free_state or \
+     state == PlayerStates.main_menu_state or \
+        state == PlayerStates.lang_state or \
+        state == PlayerStates.feedback_state or \
+        state == PlayerStates.choose_game or \
+        state == PlayerStates.choose_bot_difficulty or \
+        state == PlayerStates.choose_lobby_type or \
+        state == PlayerStates.choose_lobby_creation_type

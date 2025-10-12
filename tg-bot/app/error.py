@@ -23,3 +23,9 @@ class Error:
 
     def __str__(self):
         return self.message
+    
+    def setLobbyId(self, _id):
+        self.lobby_id = _id
+
+    def setGameId(self, _id):
+        self.game_id = _id
