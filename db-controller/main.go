@@ -562,6 +562,35 @@ func main() {
                 }
                 err = handleCheckLobbyReady(conn, kafkaMsg.CorrelationId, checkData)
 
+            case "is_lobby_host":
+                var checkData struct {
+                    LobbyId   int64  `json:"lobby_id"`
+                    PlayerId  int64  `json:"player_id"`
+                }
+                if err := json.Unmarshal(kafkaMsg.Data, &checkData); err != nil {
+                    log.Printf("Failed to parse lobby id: %v", err)
+                    continue
+                }
+                err = handleIsLobbyHost(conn, kafkaMsg.CorrelationId, checkData)
+
+            case "ban_player":
+                var banData struct {
+                    LobbyId   int64  `json:"lobby_id"`
+                    HostId    int64  `json:"host_id"`
+                    PlayerId  int64  `json:"player_id"`
+                }
+                if err := json.Unmarshal(kafkaMsg.Data, &banData); err != nil {
+                    log.Printf("Failed to parse ban player data: %v", err)
+                    continue
+                }
+                err = handleBanPlayer(conn, kafkaMsg.CorrelationId, banData)
+
+            case "server_info":
+                err = handleServerInfo(kafkaMsg.CorrelationId)
+                if err != nil {
+                    log.Printf("Failed to handle server info request: %v", err)
+                }
+
   // another commands
 
             default:
@@ -1443,6 +1472,109 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
     return nil
 }
 
+func handleIsLobbyHost(conn *pgx.Conn, correlationId string, checkData struct {
+    LobbyId   int64  `json:"lobby_id"`
+    PlayerId  int64  `json:"player_id"`
+}) error {
+    var isHost bool
+    err := conn.QueryRow(context.Background(),
+        `SELECT host FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
+        checkData.LobbyId, checkData.PlayerId).Scan(&isHost)
+
+    if err != nil {
+        if err == pgx.ErrNoRows {
+            isHost = false
+        } else {
+            return fmt.Errorf("failed to query lobby host: %w", err)
+        }
+    }
+
+    response := struct {
+        CorrelationId string `json:"correlation_id"`
+        IsHost        bool   `json:"is_host"`
+    }{
+        CorrelationId: correlationId,
+        IsHost:        isHost,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal is host response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send is host response: %w", err)
+    }
+
+    log.Printf("Sent is host response for player_id %d in lobby_id %d: %t", checkData.PlayerId, checkData.LobbyId, isHost)
+    return nil
+}
+
+func handleBanPlayer(conn *pgx.Conn, correlationId string, banData struct {
+    LobbyId   int64  `json:"lobby_id"`
+    HostId    int64  `json:"host_id"`
+    PlayerId  int64  `json:"player_id"`
+}) error {
+    tx, err := conn.Begin(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+    defer tx.Rollback(context.Background())
+
+    var isHost bool
+    err = tx.QueryRow(context.Background(),
+        `SELECT host FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
+        banData.LobbyId, banData.HostId).Scan(&isHost)
+
+    if err != nil {
+        if err == pgx.ErrNoRows {
+            return sendAnswerResponse(correlationId, false, "DBAnswerPlayerNotInLobby")
+        }
+        return fmt.Errorf("failed to query lobby host: %w", err)
+    }
+
+    if !isHost {
+        return sendAnswerResponse(correlationId, false, "DBAnswerOnlyHostCanBanPlayers")
+    }
+
+    var playerExists bool
+    err = tx.QueryRow(context.Background(),
+        `SELECT EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = $1 AND player_id = $2)`,
+        banData.LobbyId, banData.PlayerId).Scan(&playerExists)
+
+    if err != nil {
+        return fmt.Errorf("failed to check player existence: %w", err)
+    }
+
+    if !playerExists {
+        return sendAnswerResponse(correlationId, false, "DBAnswerPlayerNotInLobby")
+    }
+
+    if banData.HostId == banData.PlayerId {
+        return sendAnswerResponse(correlationId, false, "DBAnswerCannotBanHost")
+    }
+
+    _, err = tx.Exec(context.Background(),
+        `DELETE FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
+        banData.LobbyId, banData.PlayerId)
+
+    if err != nil {
+        return fmt.Errorf("failed to remove player from lobby: %w", err)
+    }
+
+    if err := tx.Commit(context.Background()); err != nil {
+        return fmt.Errorf("failed to commit transaction: %w", err)
+    }
+
+    return sendAnswerResponse(correlationId, true, "")
+}
+
 func handleSetPlayerReady(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
     result, err := conn.Exec(context.Background(),
         `UPDATE lobby_players SET is_ready = $1
@@ -1486,6 +1618,13 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyDataIn Lob
 
     if lobby.Status == "STARTED" {
         return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyCannotStartGameInCurrentStatus")
+    }
+
+    _, err = tx.Exec(context.Background(),
+        `DELETE FROM lobby_players WHERE lobby_id = $1 AND access = true AND in_lobby = false`,
+        lobbyDataIn.ID)
+    if err != nil {
+        return fmt.Errorf("failed to delete players without in_lobby flag: %w", err)
     }
 
     rows, err := tx.Query(context.Background(),
@@ -1751,12 +1890,12 @@ func handleGetCurrentPlayers(conn *pgx.Conn, correlationId string, gameId int64)
     var players []CurrentPlayerInfo
 
     rows, err := conn.Query(context.Background(),
-        `SELECT pg.player_id, 
+        `SELECT pg.player_id,
                 COALESCE(bool_or(gh.is_give_up), false) as give_up,
                 EXISTS (
-                    SELECT 1 FROM games_history gh2 
-                    WHERE gh2.game_id = $1 
-                    AND gh2.player_id = pg.player_id 
+                    SELECT 1 FROM games_history gh2
+                    WHERE gh2.game_id = $1
+                    AND gh2.player_id = pg.player_id
                     AND gh2.bulls = 4
                 ) as finished
          FROM player_games pg
@@ -1843,7 +1982,7 @@ func handleGetRandomLobbyId(conn *pgx.Conn, correlationId string, serverId int64
     var lobbyId int64
     err := conn.QueryRow(context.Background(),
         `SELECT id FROM lobbies
-         WHERE server_id = $1 AND is_private = false AND status = 'WAITING'
+         WHERE server_id = $1 AND is_private = false AND status != 'STARTED'
          ORDER BY RANDOM() LIMIT 1`,
         serverId).Scan(&lobbyId)
 
@@ -2043,7 +2182,7 @@ func handleCheckLobbyReady(conn *pgx.Conn, correlationId string, checkData struc
     }
 
     rows, err := conn.Query(context.Background(),
-        `SELECT player_id, is_ready FROM lobby_players WHERE lobby_id = $1 AND access = true`,
+        `SELECT player_id, is_ready FROM lobby_players WHERE lobby_id = $1 AND access = true and in_lobby = true`,
         checkData.LobbyId)
 
     if err != nil {
@@ -2078,4 +2217,32 @@ func handleCheckLobbyReady(conn *pgx.Conn, correlationId string, checkData struc
     }
 
     return sendAnswerResponse(correlationId, true, "")
+}
+
+func handleServerInfo(correlationId string) error {
+    response := struct {
+        CorrelationId string `json:"correlation_id"`
+        Result        int    `json:"result"` // 1 for success
+    }{
+        CorrelationId: correlationId,
+        Result:        1,
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal server info response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send server info response: %w", err)
+    }
+
+    log.Printf("Sent server info response for correlation_id %s", correlationId)
+    return nil
 }

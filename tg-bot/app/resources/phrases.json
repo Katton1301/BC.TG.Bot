@@ -65,8 +65,8 @@
         "giveUpCommand": "сдаться",
         "giveUp": "Сдался!",
         "waitingTimeout": "Время ожидания истекло. Возврат в меню.",
-        "serverUnavailable": "⚠️Игровой сервер временно недоступен!",
-        "serverUnavailableTryLater": "Извините, игровой сервер в настоящее время недоступен. Пожалуйста, попробуйте позже.",
+        "gameServerUnavailable": "⚠️Игровой сервер временно недоступен!",
+        "gameServerUnavailableTryLater": "Извините, игровой сервер в настоящее время недоступен. Пожалуйста, попробуйте позже.",
         "fullGame": "Полная игра",
         "toMenu": "В меню",
         "noGameSteps": "В игре не было ходов",
@@ -110,7 +110,16 @@
         "DBAnswerOnlyHostCanStartGame": "Только хост может начать игру",
         "DBAnswerLobbyIsntAcceptingPlayers": "Это Лобби не принимает игроков на данный момент",
         "DBAnswerLobbyCannotReloadInCurrentStatus": "Нельзя перезагрузить лобби при текущем статусе",
-        "DBAnswerOnlyHostCanReloadLobby": "Только хост может перезагрузить лобби"
+        "DBAnswerOnlyHostCanReloadLobby": "Только хост может перезагрузить лобби",
+        "banPlayer": "Забанить игрока",
+        "whichPlayerNeedBan": "Какого игрока нужно забанить?",
+        "youHaveBeenBanned": "Вас забанили в лобби!",
+        "hasBeenBanned": "был забанен в лобби",
+        "noPlayersToBan": "Нет игроков для бана",
+        "invalidPlayerName": "Неверное имя игрока",
+        "DBAnswerOnlyHostCanBanPlayers": "Только хост может банить игроков",
+        "DBAnswerPlayerNotInLobby": "Игрок не в лобби",
+        "DBAnswerCannotBanHost": "Невозможно забанить хоста"
     },
     "en": {
         "name": "English",
@@ -178,8 +187,8 @@
         "giveUpCommand": "give up",
         "giveUp": "gave up!",
         "waitingTimeout": "Waiting time expired. Return to menu.",
-        "serverUnavailable": "⚠️Game server is temporarily unavailable!",
-        "serverUnavailableTryLater": "Sorry, the game server is currently unavailable. Please try again later.",
+        "gameServerUnavailable": "⚠️Game server is temporarily unavailable!",
+        "gameServerUnavailableTryLater": "Sorry, the game server is currently unavailable. Please try again later.",
         "fullGame": "Full game",
         "toMenu": "To menu",
         "noGameSteps": "There were no steps in the game",
@@ -223,6 +232,15 @@
         "DBAnswerOnlyHostCanStartGame": "Only host can start the game",
         "DBAnswerLobbyIsntAcceptingPlayers": "This lobby is not accepting players at the moment.",
         "DBAnswerLobbyCannotReloadInCurrentStatus": "Cannot reload lobby in current status",
-        "DBAnswerOnlyHostCanReloadLobby": "Only host can reload lobby"
+        "DBAnswerOnlyHostCanReloadLobby": "Only host can reload lobby",
+        "banPlayer": "Ban player",
+        "whichPlayerNeedBan": "Which player need ban?",
+        "youHaveBeenBanned": "You have been banned from the lobby!",
+        "hasBeenBanned": "has been banned from the lobby",
+        "noPlayersToBan": "No players to ban",
+        "invalidPlayerName": "Invalid player name",
+        "DBAnswerOnlyHostCanBanPlayers": "Only host can ban players",
+        "DBAnswerPlayerNotInLobby": "Player not in lobby",
+        "DBAnswerCannotBanHost": "Cannot ban the host"
     }
 }

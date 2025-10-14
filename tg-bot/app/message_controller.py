@@ -125,12 +125,15 @@ class MessageController:
 
     async def callback_full_game(self, callback: types.CallbackQuery, state: FSMContext):
         await self.eh.game_report(callback, state)
+        await callback.answer()
 
     async def callback_to_menu(self, callback: types.CallbackQuery, state: FSMContext):
         await self.eh.exit_to_menu(callback, state)
+        await callback.answer()
 
     async def callback_stay_in_lobby(self, callback: types.CallbackQuery, state: FSMContext):
         await self.eh.stay_in_lobby(callback, state)
+        await callback.answer()
 
     async def state_waiting_a_rival(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
@@ -148,9 +151,14 @@ class MessageController:
             await self.eh.leave_lobby(message, state)
         elif phrases.checkPhrase("startGame", str(message.text)):
             await self.eh.start_lobby_game(message, state)
+        elif phrases.checkPhrase("banPlayer", str(message.text)):
+            await self.eh.delete_player(message, state)
         else:
             lang = self.eh.langs[message.from_user.id]
             await message.answer(phrases.dict("chooseMenuItem", lang))
+
+    async def state_ban_player_choose(self, message: types.Message, state: FSMContext):
+        await self.eh.choose_ban_player(message, state)
 
     async def state_choose_lobby_type(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]

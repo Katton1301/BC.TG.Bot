@@ -49,7 +49,7 @@ services:
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list || exit 1"]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list && kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 20
@@ -189,6 +189,7 @@ services:
     image: tg-bot:latest
     depends_on:
       - kafka
+      - kafka-setup
       - bc-server
       - bc-postgres
     deploy:

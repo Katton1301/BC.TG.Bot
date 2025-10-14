@@ -16,6 +16,7 @@ async def setup_event_handler(eh):
     router.message.register(handle_waiting_a_rival, StateFilter(PlayerStates.waiting_a_rival))
     router.message.register(handle_wait_password, StateFilter(PlayerStates.wait_password))
     router.message.register(handle_in_lobby, StateFilter(PlayerStates.in_lobby))
+    router.message.register(handle_ban_player_from_lobby, StateFilter(PlayerStates.ban_player_choose))
     router.message.register(handle_choose_lobby_type, StateFilter(PlayerStates.choose_lobby_type))
     router.message.register(handle_choose_lobby_creation_type, StateFilter(PlayerStates.choose_lobby_creation_type))
     router.message.register(handle_enter_password, StateFilter(PlayerStates.enter_password))
@@ -62,6 +63,10 @@ async def handle_wait_password(message: types.Message, state: FSMContext):
 @router.message(StateFilter(PlayerStates.in_lobby))
 async def handle_in_lobby(message: types.Message, state: FSMContext):
     await router.controller.state_in_lobby(message, state)
+
+@router.message(StateFilter(PlayerStates.ban_player_choose))
+async def handle_ban_player_from_lobby(message: types.Message, state: FSMContext):
+    await router.controller.state_ban_player_choose(message, state)
 
 @router.message(StateFilter(PlayerStates.choose_lobby_type))
 async def handle_choose_lobby_type(message: types.Message, state: FSMContext):
