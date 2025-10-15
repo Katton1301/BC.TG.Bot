@@ -551,7 +551,7 @@ func main() {
                 }
                 err = handleGetLobbyNames(conn, kafkaMsg.CorrelationId, lobby_id)
 
-            case "check_lobby_ready":
+            case "prepare_to_start_lobby":
                 var checkData struct {
                     LobbyId   int64  `json:"lobby_id"`
                     PlayerId  int64  `json:"player_id"`
@@ -560,7 +560,7 @@ func main() {
                     log.Printf("Failed to parse lobby id: %v", err)
                     continue
                 }
-                err = handleCheckLobbyReady(conn, kafkaMsg.CorrelationId, checkData)
+                err = handlePrepareToStartLobby(conn, kafkaMsg.CorrelationId, checkData)
 
             case "is_lobby_host":
                 var checkData struct {
@@ -1620,13 +1620,6 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyDataIn Lob
         return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyCannotStartGameInCurrentStatus")
     }
 
-    _, err = tx.Exec(context.Background(),
-        `DELETE FROM lobby_players WHERE lobby_id = $1 AND access = true AND in_lobby = false`,
-        lobbyDataIn.ID)
-    if err != nil {
-        return fmt.Errorf("failed to delete players without in_lobby flag: %w", err)
-    }
-
     rows, err := tx.Query(context.Background(),
         `SELECT player_id, is_ready FROM lobby_players WHERE lobby_id = $1 AND access = true`,
         lobbyDataIn.ID)
@@ -2155,7 +2148,7 @@ func handleGetLobbyNames(conn *pgx.Conn, correlationId string, lobby_id int64) e
     return nil
 }
 
-func handleCheckLobbyReady(conn *pgx.Conn, correlationId string, checkData struct {
+func handlePrepareToStartLobby(conn *pgx.Conn, correlationId string, checkData struct {
     LobbyId   int64  `json:"lobby_id"`
     PlayerId  int64  `json:"player_id"`
 }) error {
@@ -2214,6 +2207,13 @@ func handleCheckLobbyReady(conn *pgx.Conn, correlationId string, checkData struc
         if !player.IsReady {
             return sendAnswerResponse(correlationId, false, "DBAnswerNotAllPlayersAreReady")
         }
+    }
+
+    _, err = conn.Exec(context.Background(),
+        `DELETE FROM lobby_players WHERE lobby_id = $1 AND access = true AND in_lobby = false`,
+        checkData.LobbyId)
+    if err != nil {
+        return fmt.Errorf("failed to delete players without in_lobby flag: %w", err)
     }
 
     return sendAnswerResponse(correlationId, true, "")

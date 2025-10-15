@@ -154,41 +154,41 @@ class EventHandler:
     async def _handle_error(self, user_id: int, error: Error):
         try:
             lang = self.langs.get(user_id, "en")
-            if error.level == ErrorLevel.INFO:
+            if error.Level() == ErrorLevel.INFO:
                 logger.info(error)
                 return
-            elif error.level == ErrorLevel.WARNING:
+            elif error.Level() == ErrorLevel.WARNING:
                 logger.info(error)
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=str(error)
                 )
                 return
-            elif error.level == ErrorLevel.ERROR:
+            elif error.Level() == ErrorLevel.ERROR:
                 logger.error(error)
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=phrases.dict("errorMessage", lang),
                     reply_markup=kb.main[lang]
                 )
-                [ok, error] = await self._change_player_state_by_id(user_id, PlayerStates.main_menu_state)
-                if not ok: await self._handle_error(user_id, error)
+                [ok, inner_error] = await self._change_player_state_by_id(user_id, PlayerStates.main_menu_state)
+                if not ok: await self._handle_error(user_id, inner_error)
                 return
-            elif error.level == ErrorLevel.GAME_ERROR:
+            elif error.Level() == ErrorLevel.GAME_ERROR:
                 logger.error(error)
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=phrases.dict("errorGame", lang)
                 )
                 if error.game_id != 0:
-                    [ok, error] = await self._give_up_in_game(user_id, error.game_id)
+                    [ok, inner_error] = await self._give_up_in_game(user_id, error.game_id)
                     if not ok:
-                        error.level = ErrorLevel.CRITICAL
-                        error.game_id = None
-                        await self._handle_error(user_id, error)
+                        inner_error = Error(ErrorLevel.CRITICAL, inner_error.Message())
+                        inner_error.game_id = None
+                        await self._handle_error(user_id, inner_error)
 
-                [ok, error] = await self._change_player_state_by_id(user_id, PlayerStates.main_menu_state)
-                if not ok: await self._handle_error(user_id, error)
+                [ok, inner_error] = await self._change_player_state_by_id(user_id, PlayerStates.main_menu_state)
+                if not ok: await self._handle_error(user_id, inner_error)
 
                 await self.bot.send_message(
                     chat_id=user_id,
@@ -196,27 +196,28 @@ class EventHandler:
                     reply_markup=kb.main[lang]
                 )
                 return
-            elif error.level == ErrorLevel.LOBBY_ERROR:
+            elif error.Level() == ErrorLevel.LOBBY_ERROR:
                 logger.error(error)
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=phrases.dict("errorLobby", lang)
                 )
                 if error.lobby_id != 0:
-                    [ok, error] = await self._leave_lobby(user_id, error.lobby_id)
-                    error.level = ErrorLevel.CRITICAL
-                    error.lobby_id = None
-                    if not ok: await self._handle_error(user_id, error)
+                    [ok, inner_error] = await self._leave_lobby(user_id, error.lobby_id)
+                    if not ok: 
+                        inner_error = Error(ErrorLevel.CRITICAL, inner_error.Message())
+                        inner_error.lobby_id = None
+                        await self._handle_error(user_id, inner_error)
 
-                [ok, error] = await self._change_player_state_by_id(user_id, PlayerStates.main_menu_state)
-                if not ok: await self._handle_error(user_id, error)
+                [ok, inner_error] = await self._change_player_state_by_id(user_id, PlayerStates.main_menu_state)
+                if not ok: await self._handle_error(user_id, inner_error)
                 await self.bot.send_message(
                     chat_id=user_id,
                     text=phrases.dict('menu', lang),
                     reply_markup=kb.main[lang]
                 )
                 return
-            elif error.level == ErrorLevel.CRITICAL:
+            elif error.Level() == ErrorLevel.CRITICAL:
                 logger.critical(error)
                 await self.bot.send_message(
                     chat_id=user_id,
@@ -226,7 +227,7 @@ class EventHandler:
         except Exception as e:
             logger.error(f"Failed to handle error for user {user_id}: {str(e)}")
 
-        if error.level == ErrorLevel.CRITICAL:
+        if error.Level() == ErrorLevel.CRITICAL:
             sys.exit(1)
 
     async def _insert_player(self, player: Any):
@@ -617,17 +618,24 @@ class EventHandler:
                 if not ok: return [ok, error]
 
 
-            if game_response['game_stage'] == 'FINISHED':
-                [ok, error] = await self._finish_game(player_id, game_id, names, False)
-                if not ok: return [ok, error]
-            elif steps[player_i]['finished'] and unfinished_players == 0:
-                [ok, error] = await self._finish_game(player_id, game_id, names, True)
-                if not ok: return [ok, error]
-
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.main_menu_state)
             if not ok: return [ok, error]
 
             await self.bot.send_message( chat_id=player_id, text=phrases.dict("youGaveUp", lang), reply_markup=kb.main[lang] )
+
+            if game_response['game_stage'] == 'FINISHED':
+                [ok, error] = await self._finish_game(player_id, game_id, names, False)
+                if not ok:
+                    if error.Level() == ErrorLevel.GAME_ERROR:
+                        error = Error(ErrorLevel.ERROR, error.Message())
+                    return [ok, error]
+            elif steps[player_i]['finished'] and unfinished_players == 0:
+                [ok, error] = await self._finish_game(player_id, game_id, names, True)
+                if not ok:
+                    if error.Level() == ErrorLevel.GAME_ERROR:
+                        error = Error(ErrorLevel.ERROR, error.Message())
+                    return [ok, error]
+                
             return [True, None]
 
         except asyncio.TimeoutError:
@@ -904,7 +912,7 @@ class EventHandler:
             for player in [player1, player2]:
                 [ok, error] = await self._change_player_state_by_id(player['player_id'], PlayerStates.waiting_for_number)
                 if not ok:
-                    if error.level == ErrorLevel.INFO or error.level == ErrorLevel.WARNING:
+                    if error.Level() == ErrorLevel.INFO or error.Level() == ErrorLevel.WARNING:
                         continue
                     else:
                         return [ok, error]
@@ -1418,7 +1426,7 @@ class EventHandler:
         try:
             [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
-                raise Exception(error.msg)
+                raise Exception(error.Message())
 
             leave_msg = {
                 "command": "leave_lobby",
@@ -1434,11 +1442,11 @@ class EventHandler:
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
-                raise Exception(error.msg)
+                raise Exception(error.Message())
 
             [ok, error] = await self._send_player_leave_lobby(player_id, lobby_id, lobby_players, lobby_names)
             if not ok:
-                raise Exception(error.msg)
+                raise Exception(error.Message())
 
 
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.choose_game)
@@ -1460,6 +1468,64 @@ class EventHandler:
             error = Error(ErrorLevel.LOBBY_ERROR, msg)
             error.setLobbyId(lobby_id)
             return [False, error]
+
+
+    async def _ban_player(self, host_id, player_id, lobby_id, lobby_names, lobby_players):
+        try:
+            lang = self.langs.get(host_id, "en")
+            ban_msg = {
+                "command": "ban_player",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "host_id": host_id,
+                    "player_id": player_id
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            ban_response = await self.kafka.request_to_db(ban_msg, timeout=5)
+            if "timeout" in ban_response and ban_response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not ban_response or 'success' not in ban_response:
+                raise Exception("Invalid response from database: missing success field")
+
+            if not ban_response['success']:
+                error_msg = ban_response.get('error', 'errorMessage')
+                await self.bot.send_message(
+                    chat_id=host_id,
+                    text=phrases.dict(error_msg, lang)
+                )
+                return [False, error_msg]
+
+            banned_player_name = next((n['name'] for n in lobby_names if n['id'] == player_id), "Unknown")
+
+            for player in lobby_players:
+                player_lang = self.langs.get(player['player_id'], "en")
+                if player['player_id'] == player_id:
+                    await self.bot.send_message(
+                        chat_id=player['player_id'],
+                        text=phrases.dict("youHaveBeenBanned", player_lang),
+                        reply_markup=kb.main[player_lang]
+                    )
+                    await self._change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+                else:
+                    await self.bot.send_message(
+                        chat_id=player['player_id'],
+                        text=f"{banned_player_name} {phrases.dict('hasBeenBanned', player_lang)}",
+                        reply_markup=kb.get_lobby_keyboard(player['host'], player['is_ready'], player_lang)
+                    )
+
+            return [True, None]
+
+        except Exception as e:
+            msg = f"Failed to ban player for user {player_id}: {str(e)}"
+            if lobby_id is None:
+                return [False, Error(ErrorLevel.ERROR, msg)]
+            else:
+                error = Error(ErrorLevel.LOBBY_ERROR, msg)
+                error.setLobbyId(lobby_id)
+                return [False, error]
+
 
     """public--------------------------------------------------------------------------------------------------"""
     async def initGameServer(self):
@@ -2427,21 +2493,21 @@ class EventHandler:
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
             [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
             [ok, error] = await self._send_players_states(player_id, lobby_id, lobby_players, lobby_names)
             if not ok:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
@@ -2538,14 +2604,14 @@ class EventHandler:
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
             [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
@@ -2603,14 +2669,14 @@ class EventHandler:
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
             [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
@@ -2621,23 +2687,10 @@ class EventHandler:
                     player_to_ban = name_data['id']
                     break
 
+            player_back = False
             if player_to_ban is None:
                 if phrases.checkPhrase("back", str(message.text)):
-                    [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
-                    if not ok:
-                        await self._handle_error(player_id, error)
-                        return False
-
-                    current_player = next((p for p in lobby_players if p['player_id'] == player_id), None)
-                    if current_player:
-                        is_host = current_player['host']
-                        is_ready = current_player['is_ready']
-                        await self.bot.send_message(
-                            chat_id=player_id,
-                            text=phrases.dict("youInLobby", lang),
-                            reply_markup=kb.get_lobby_keyboard(is_host, is_ready, lang)
-                        )
-                    return True
+                    player_back = True
 
                 await self.bot.send_message(
                     chat_id=player_id,
@@ -2645,47 +2698,11 @@ class EventHandler:
                 )
                 return False
 
-            ban_msg = {
-                "command": "ban_player",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "host_id": player_id,
-                    "player_id": player_to_ban
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            ban_response = await self.kafka.request_to_db(ban_msg, timeout=5)
-            if "timeout" in ban_response and ban_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not ban_response or 'success' not in ban_response:
-                raise Exception("Invalid response from database: missing success field")
-
-            if not ban_response['success']:
-                error_msg = ban_response.get('error', 'errorMessage')
-                await self.bot.send_message(
-                    chat_id=player_id,
-                    text=phrases.dict(error_msg, lang)
-                )
-                return False
-
-            banned_player_name = next((n['name'] for n in lobby_names if n['id'] == player_to_ban), "Unknown")
-
-            for player in lobby_players:
-                player_lang = self.langs.get(player['player_id'], "en")
-                if player['player_id'] == player_to_ban:
-                    await self.bot.send_message(
-                        chat_id=player['player_id'],
-                        text=phrases.dict("youHaveBeenBanned", player_lang),
-                        reply_markup=kb.main[player_lang]
-                    )
-                    await self._change_player_state_by_id(player_to_ban, PlayerStates.main_menu_state)
-                else:
-                    await self.bot.send_message(
-                        chat_id=player['player_id'],
-                        text=f"{banned_player_name} {phrases.dict('hasBeenBanned', player_lang)}",
-                        reply_markup=kb.get_lobby_keyboard(player['host'], player['is_ready'], player_lang)
-                    )
+            if not player_back:
+                [ok, error] = await self._ban_player(player_id, player_to_ban, lobby_id, lobby_names, lobby_players)
+                if not ok:
+                    await self._handle_error(player_id, error)
+                    return False
 
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
             if not ok:
@@ -2745,21 +2762,21 @@ class EventHandler:
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
             [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
             [ok, error] = await self._send_players_states(player_id, lobby_id, lobby_players, lobby_names)
             if not ok:
-                error.level = ErrorLevel.LOBBY_ERROR
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
@@ -2809,7 +2826,7 @@ class EventHandler:
                 return False
 
             check_ready_msg = {
-                "command": "check_lobby_ready",
+                "command": "prepare_to_start_lobby",
                 "data": {
                     "lobby_id": lobby_id,
                     "player_id": player_id,
@@ -2880,7 +2897,7 @@ class EventHandler:
             for player in lobby_players:
                 [ok, error] = await self._change_player_state_by_id(player['player_id'], PlayerStates.waiting_for_number)
                 if not ok:
-                    if error.level == ErrorLevel.INFO or error.level == ErrorLevel.WARNING: continue
+                    if error.Level() == ErrorLevel.INFO or error.Level() == ErrorLevel.WARNING: continue
                     await self._handle_error(player['player_id'], error)
                     return False
 
