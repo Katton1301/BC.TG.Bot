@@ -124,15 +124,24 @@ class MessageController:
         await self.eh.send_feedback(message, state)
 
     async def callback_full_game(self, callback: types.CallbackQuery, state: FSMContext):
-        await self.eh.game_report(callback, state)
+        if await state.get_state() is None:
+            await self.eh.new_player_start(callback, state)
+        else:
+            await self.eh.game_report(callback, state)
         await callback.answer()
 
     async def callback_to_menu(self, callback: types.CallbackQuery, state: FSMContext):
-        await self.eh.exit_to_menu(callback, state)
+        if await state.get_state() is None:
+            await self.eh.new_player_start(callback, state)
+        else:
+            await self.eh.exit_to_menu(callback, state)
         await callback.answer()
 
     async def callback_stay_in_lobby(self, callback: types.CallbackQuery, state: FSMContext):
-        await self.eh.stay_in_lobby(callback, state)
+        if await state.get_state() is None:
+            await self.eh.new_player_start(callback, state)
+        else:
+            await self.eh.stay_in_lobby(callback, state)
         await callback.answer()
 
     async def state_waiting_a_rival(self, message: types.Message, state: FSMContext):

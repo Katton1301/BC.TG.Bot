@@ -1688,7 +1688,10 @@ class EventHandler:
             await self._handle_error(player_id, error)
             return False
 
-        await message.answer(phrases.dict("greeting", lang), reply_markup=kb.main[lang])
+        if type(message) == types.Message:
+            await message.answer(phrases.dict("greeting", lang), reply_markup=kb.main[lang])
+        else:
+            await self.bot.send_message( chat_id=player_id, text=phrases.dict("greeting", lang), reply_markup=kb.main[lang] )
         return True
 
     async def help_player(self, message: Any, state: FSMContext):
