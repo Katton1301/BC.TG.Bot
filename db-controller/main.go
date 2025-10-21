@@ -409,15 +409,15 @@ func main() {
                     log.Printf("Failed to get current game: %v", err)
                 }
 
-            case "set_current_game":
+            case "exit_from_game":
                 var playerGame PlayerGameData
                 if err := json.Unmarshal(kafkaMsg.Data, &playerGame); err != nil {
                     log.Printf("Failed to parse player game data: %v", err)
                     continue
                 }
-                err = handleSetCurrentGame(conn, playerGame)
+                err = handleExitFromGame(conn, playerGame)
                 if err != nil {
-                    log.Printf("Failed to set current game: %v", err)
+                    log.Printf("Failed to exit from game: %v", err)
                 }
 
             case "get_game_report":
@@ -733,6 +733,20 @@ func handleCreateGame(conn *pgx.Conn, correlation_id string, game GameData) erro
    return nil
 }
 
+func handleExitFromGame(conn *pgx.Conn, playerGame PlayerGameData) error {
+    _, err := conn.Exec(context.Background(),
+        `UPDATE player_games
+            SET is_current_game = false
+            WHERE player_id = $1 AND game_id = $2`,
+        playerGame.PlayerId, playerGame.GameId)
+    if err != nil {
+        return fmt.Errorf("failed to exit player from game: %w", err)
+    }
+
+    log.Printf("Player %d exited from game %d", playerGame.PlayerId, playerGame.GameId)
+    return nil
+}
+
 func handleUpdateGame(conn *pgx.Conn, game GameData) error {
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -852,7 +866,22 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
 }
 
 func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
-    _, err := conn.Exec(context.Background(),
+    tx, err := conn.Begin(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+    defer tx.Rollback(context.Background())
+
+    _, err = tx.Exec(context.Background(),
+        `UPDATE player_games
+            SET is_current_game = false
+            WHERE player_id = $1`,
+        playerGame.PlayerId)
+    if err != nil {
+        return fmt.Errorf("failed to reset current games: %w", err)
+    }
+
+    _, err = tx.Exec(context.Background(),
     `INSERT INTO player_games(player_id, server_id, game_id, is_current_game, is_host)
     VALUES($1, $2, $3, $4, $5)`,
     playerGame.PlayerId, playerGame.ServerId, playerGame.GameId, playerGame.IsCurrentGame, playerGame.IsHost)
@@ -861,6 +890,9 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
     return fmt.Errorf("failed to insert player game: %w", err)
     }
 
+    if err := tx.Commit(context.Background()); err != nil {
+        return fmt.Errorf("failed to commit transaction: %w", err)
+    }
     log.Printf("Inserted player game")
     return nil
 }
@@ -924,40 +956,6 @@ func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64
     }
 
     log.Printf("Sent current game ID %d for player %d (finished: %v)", gameID, player_id, finished)
-    return nil
-}
-
-func handleSetCurrentGame(conn *pgx.Conn, playerGame PlayerGameData) error {
-    tx, err := conn.Begin(context.Background())
-    if err != nil {
-        return fmt.Errorf("failed to begin transaction: %w", err)
-    }
-    defer tx.Rollback(context.Background())
-
-    _, err = tx.Exec(context.Background(),
-        `UPDATE player_games
-            SET is_current_game = false
-            WHERE player_id = $1`,
-        playerGame.PlayerId)
-    if err != nil {
-        return fmt.Errorf("failed to reset current games: %w", err)
-    }
-
-    _, err = tx.Exec(context.Background(),
-        `UPDATE player_games
-            SET is_current_game = $1
-            WHERE player_id = $2 AND game_id = $3`,
-        playerGame.IsCurrentGame, playerGame.PlayerId, playerGame.GameId)
-    if err != nil {
-        return fmt.Errorf("failed to set current game: %w", err)
-    }
-
-    if err := tx.Commit(context.Background()); err != nil {
-        return fmt.Errorf("failed to commit transaction: %w", err)
-    }
-
-    log.Printf("Set current game for player %d to game %d (is_current=%v)",
-        playerGame.PlayerId, playerGame.GameId, playerGame.IsCurrentGame)
     return nil
 }
 
@@ -1260,6 +1258,40 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
         return fmt.Errorf("failed to begin transaction: %w", err)
     }
     defer tx.Rollback(context.Background())
+
+
+    var existingLobbyId int64
+    err = tx.QueryRow(context.Background(),
+        `SELECT lobby_id FROM lobby_players
+         WHERE player_id = $1 AND access = true AND lobby_id != $2`,
+        joinData.PlayerId, joinData.LobbyId).Scan(&existingLobbyId)
+
+    if err == nil {
+        response := AnswerResponse{
+            CorrelationId: correlation_id,
+            Success:       false,
+            ID:            existingLobbyId,
+            Error:         "DBAnswerAlreadyInLobby",
+        }
+
+        responseBytes, err := json.Marshal(response)
+        if err != nil {
+            return fmt.Errorf("failed to marshal join lobby response: %w", err)
+        }
+
+        producer_topic := "db_bot"
+        err = producer.Produce(&kafka.Message{
+            TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+            Value:          responseBytes,
+        }, nil)
+
+        if err != nil {
+            return fmt.Errorf("failed to send join lobby response: %w", err)
+        }
+        return nil
+    } else if err != pgx.ErrNoRows {
+        return fmt.Errorf("failed to check player lobby status: %w", err)
+    }
 
     var lobby LobbyData
     err = tx.QueryRow(context.Background(),

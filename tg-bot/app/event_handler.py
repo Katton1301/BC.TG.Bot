@@ -181,7 +181,7 @@ class EventHandler:
                     text=phrases.dict("errorGame", lang)
                 )
                 if error.game_id != 0:
-                    [ok, inner_error] = await self._give_up_in_game(user_id, error.game_id)
+                    [ok, inner_error] = await self._give_up_in_game(user_id, error.game_id, True)
                     if not ok:
                         inner_error = Error(ErrorLevel.CRITICAL, inner_error.Message())
                         inner_error.game_id = None
@@ -204,7 +204,7 @@ class EventHandler:
                 )
                 if error.lobby_id != 0:
                     [ok, inner_error] = await self._leave_lobby(user_id, error.lobby_id)
-                    if not ok: 
+                    if not ok:
                         inner_error = Error(ErrorLevel.CRITICAL, inner_error.Message())
                         inner_error.lobby_id = None
                         await self._handle_error(user_id, inner_error)
@@ -312,19 +312,18 @@ class EventHandler:
             game_id = db_response['id']
             logger.info(f"Game created with ID: {game_id}")
 
-            player_msg = {
+            add_player_msg = {
                 "command": "add_player_game",
                 "data": {
                     "player_id": player_id,
                     "server_id": SERVER_ID,
                     "game_id": game_id,
-                    "is_current_game": False,
+                    "is_current_game": True,
                     "is_host": True,
                 },
                 "timestamp": str(datetime.now())
             }
-
-            await self.kafka.send_to_db(player_msg)
+            await self.kafka.send_to_db(add_player_msg)
             logger.info(f"Player {player_id} added to game {game_id}")
 
             game_msg = {
@@ -356,23 +355,8 @@ class EventHandler:
 
     async def _add_player_to_game(self, game_id, player_id):
         try:
-            player_msg = {
+            add_player_msg = {
                 "command": "add_player_game",
-                "data": {
-                    "player_id": player_id,
-                    "server_id": SERVER_ID,
-                    "game_id": game_id,
-                    "is_current_game": False,
-                    "is_host": False,
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            await self.kafka.send_to_db(player_msg)
-            logger.info(f"Player {player_id} added to game {game_id}")
-
-            set_current_game = {
-                "command": "set_current_game",
                 "data": {
                     "player_id": player_id,
                     "server_id": SERVER_ID,
@@ -382,8 +366,9 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            await self.kafka.send_to_db(set_current_game)
-            logger.info(f"Player {player_id} set current game {game_id}")
+
+            await self.kafka.send_to_db(add_player_msg)
+            logger.info(f"Player {player_id} added to game {game_id}")
 
             game_msg = {
                 "command": 5,  # Assuming 5 is ADD_PLAYER command
@@ -469,20 +454,6 @@ class EventHandler:
 
     async def _start_game(self, game_id, player_id):
         try:
-            set_current_game = {
-                "command": "set_current_game",
-                "data": {
-                    "player_id": player_id,
-                    "server_id": SERVER_ID,
-                    "game_id": game_id,
-                    "is_current_game": True,
-                    "is_host": True,
-                },
-                "timestamp": str(datetime.now())
-            }
-            await self.kafka.send_to_db(set_current_game)
-            logger.info(f"Player {player_id} set current game {game_id}")
-
             game_msg = {
                 "command": 7,  # Assuming 7 is START_GAME command
                 "server_id": SERVER_ID,
@@ -527,7 +498,7 @@ class EventHandler:
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
-    async def _give_up_in_game(self, player_id, game_id):
+    async def _give_up_in_game(self, player_id, game_id, force):
         try:
             lang = self.langs.get(player_id, "en")
             game_msg = {
@@ -617,10 +588,6 @@ class EventHandler:
                 [ok, error] = await self._send_give_up_to_other_players(steps[player_i], lang, current_players)
                 if not ok: return [ok, error]
 
-
-            [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.main_menu_state)
-            if not ok: return [ok, error]
-
             await self.bot.send_message( chat_id=player_id, text=phrases.dict("youGaveUp", lang), reply_markup=kb.main[lang] )
 
             if game_response['game_stage'] == 'FINISHED':
@@ -635,7 +602,15 @@ class EventHandler:
                     if error.Level() == ErrorLevel.GAME_ERROR:
                         error = Error(ErrorLevel.ERROR, error.Message())
                     return [ok, error]
-                
+            else:
+                if force:
+                    [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.main_menu_state)
+                    if not ok: return [ok, error]
+                else:
+                    [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.choose_exit_game_after_give_up)
+                    if not ok: return [ok, error]
+                    await self.bot.send_message( chat_id=player_id, text=phrases.dict("stayInGame", lang), reply_markup=kb.exit_or_not[lang] )
+
             return [True, None]
 
         except asyncio.TimeoutError:
@@ -1262,6 +1237,10 @@ class EventHandler:
 
             if not db_response['success']:
                 error_msg = db_response.get('error', 'errorMessage')
+
+                if error_msg == "DBAnswerAlreadyInLobby":
+                    return [False, Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {db_response['id']}")]
+
                 if error_msg == "DBAnswerPasswordNeeded":
 
                     [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.enter_password)
@@ -1971,6 +1950,9 @@ class EventHandler:
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
+            elif steps[player_i]['finished']:
+                await self.change_player(message, state, PlayerStates.waiting_game_end)
+                await message.answer(phrases.dict("youveFinished", lang), reply_markup=ReplyKeyboardRemove())
 
             return True
 
@@ -2126,7 +2108,7 @@ class EventHandler:
             return False
         game_id = game_info['game_id']
 
-        [ok, error] = await self._give_up_in_game(player_id, game_id)
+        [ok, error] = await self._give_up_in_game(player_id, game_id, False)
         if not ok:
             await self._handle_error(player_id, error)
             return False
@@ -2178,8 +2160,8 @@ class EventHandler:
             return False
 
 
-    async def exit_to_menu(self, callback: types.CallbackQuery, state: FSMContext ):
-        player_id = callback.from_user.id
+    async def exit_to_menu(self, message: Any, state: FSMContext ):
+        player_id = message.from_user.id
         if not await self._handle_server_available(player_id):
             return False
         try:
@@ -2220,6 +2202,21 @@ class EventHandler:
                 text=phrases.dict("menu", lang),
                 reply_markup=kb.main[lang]
             )
+
+            exit_from_game_msg = {
+                "command": "exit_from_game",
+                "data": {
+                    "player_id": player_id,
+                    "server_id": SERVER_ID,
+                    "game_id": game_id,
+                    "is_current_game": False,
+                    "is_host": False,
+                },
+                "timestamp": str(datetime.now())
+            }
+            await self.kafka.send_to_db(exit_from_game_msg)
+            logger.info(f"Player {player_id} exited from game {game_id}")
+
             return True
 
         except asyncio.TimeoutError:
@@ -2269,6 +2266,12 @@ class EventHandler:
 
             if not db_response['success']:
                 error_msg = db_response.get('error', 'errorMessage')
+
+                if error_msg == "DBAnswerAlreadyInLobby":
+                    error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {db_response['id']}")
+                    await self._handle_error(player_id, error)
+                    return False
+
                 await self.bot.send_message(
                     chat_id=player_id,
                     text=phrases.dict(error_msg, lang),
@@ -2476,6 +2479,12 @@ class EventHandler:
 
             if not db_response['success']:
                 error_msg = db_response.get('error', 'errorMessage')
+
+                if error_msg == "DBAnswerAlreadyInLobby":
+                    error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {db_response['id']}")
+                    await self._handle_error(player_id, error)
+                    return False
+
                 if error_msg == "DBAnswerInvalidPassword":
                     await message.answer(
                         phrases.dict("wrongPassword", lang),

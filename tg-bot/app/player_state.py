@@ -9,6 +9,8 @@ class PlayerStates(StatesGroup):
     choose_bot_difficulty = State()
     waiting_a_rival = State()
     waiting_for_number = State()
+    choose_exit_game_after_give_up = State()
+    waiting_game_end = State()
     wait_password = State()
     in_lobby = State()
     choose_lobby_type = State()

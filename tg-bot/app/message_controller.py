@@ -108,6 +108,25 @@ class MessageController:
         else:
             await self.eh.do_step(message, state)
 
+
+    async def choose_exit_game_after_give_up(self, message: types.Message, state: FSMContext):
+        lang = self.eh.langs[message.from_user.id]
+        if phrases.checkPhrase("stay", str(message.text).lower()):
+            ok = await self.eh.change_player(message, state, PlayerStates.waiting_game_end)
+            if not ok:
+                return
+            await message.answer(phrases.dict("waitingEndGame", lang), reply_markup=ReplyKeyboardRemove())
+        elif phrases.checkPhrase("exit", str(message.text).lower()):
+            await self.eh.exit_to_menu(message, state)
+        else:
+            await message.answer(phrases.dict("chooseMenuItem", lang), reply_markup=kb.exit_or_not[lang])
+
+
+    async def waiting_game_end(self, message: types.Message, state: FSMContext):
+        lang = self.eh.langs[message.from_user.id]
+        await message.answer(phrases.dict("pleaseWaitGameEnd", lang), reply_markup=ReplyKeyboardRemove())
+
+
     async def state_lang(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
         if phrases.checkPhrase("name", str(message.text)):

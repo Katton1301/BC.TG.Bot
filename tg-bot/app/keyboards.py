@@ -11,6 +11,7 @@ full_game_menu_with_lobby = dict()
 lobby = dict()
 lobby_types = dict()
 lobby_creation_types = dict()
+exit_or_not = dict()
 
 def create_keyboards():
     for _lang in phrases.langs():
@@ -116,6 +117,15 @@ def create_keyboards():
                 [ InlineKeyboardButton(text=phrases.dict('stayInLobby', _lang), callback_data="stay_in_lobby"), ],
                 [ InlineKeyboardButton(text=phrases.dict('toMenu', _lang), callback_data="to_menu"), ],
             ]
+        )
+
+        exit_or_not[_lang] = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text=phrases.dict('stay', _lang))],
+                [KeyboardButton(text=phrases.dict('exit', _lang))],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
         )
 
         keyboard_langs = []

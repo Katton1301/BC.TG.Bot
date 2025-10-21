@@ -13,6 +13,8 @@ async def setup_event_handler(eh):
     router.message.register(play_command, StateFilter(PlayerStates.choose_game))
     router.message.register(handle_bot_difficulty, StateFilter(PlayerStates.choose_bot_difficulty))
     router.message.register(handle_number_input, StateFilter(PlayerStates.waiting_for_number))
+    router.message.register(handle_exit_game_after_give_up, StateFilter(PlayerStates.choose_exit_game_after_give_up))
+    router.message.register(handle_waiting_game_end, StateFilter(PlayerStates.waiting_game_end))
     router.message.register(handle_waiting_a_rival, StateFilter(PlayerStates.waiting_a_rival))
     router.message.register(handle_wait_password, StateFilter(PlayerStates.wait_password))
     router.message.register(handle_in_lobby, StateFilter(PlayerStates.in_lobby))
@@ -51,6 +53,14 @@ async def handle_main_menu(message: types.Message, state: FSMContext):
 @router.message(StateFilter(PlayerStates.waiting_for_number))
 async def handle_number_input(message: types.Message, state: FSMContext):
     await router.controller.state_game_step(message, state)
+
+@router.message(StateFilter(PlayerStates.choose_exit_game_after_give_up))
+async def handle_exit_game_after_give_up(message: types.Message, state: FSMContext):
+    await router.controller.choose_exit_game_after_give_up(message, state)
+
+@router.message(StateFilter(PlayerStates.waiting_game_end))
+async def handle_waiting_game_end(message: types.Message, state: FSMContext):
+    await router.controller.waiting_game_end(message, state)
 
 @router.message(StateFilter(PlayerStates.waiting_a_rival))
 async def handle_waiting_a_rival(message: types.Message, state: FSMContext):
