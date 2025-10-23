@@ -155,6 +155,15 @@ type LobbyPlayerData struct {
     InLobby   bool   `json:"in_lobby"`
 }
 
+type BlacklistData struct {
+    Id         int64     `json:"id"`
+    LobbyId    int64     `json:"lobby_id"`
+    PlayerId   int64     `json:"player_id"`
+    BannedById int64     `json:"banned_by_id"`
+    Reason     string    `json:"reason"`
+    BannedAt   time.Time `json:"banned_at"`
+}
+
 type KafkaMessage struct {
   Command string          `json:"command"`
   CorrelationId string      `json:"correlation_id"`
@@ -584,6 +593,29 @@ func main() {
                     continue
                 }
                 err = handleBanPlayer(conn, kafkaMsg.CorrelationId, banData)
+
+            case "unban_player":
+                var unbanData struct {
+                    LobbyId  int64 `json:"lobby_id"`
+                    HostId    int64  `json:"host_id"`
+                    PlayerId int64 `json:"player_id"`
+                }
+                if err := json.Unmarshal(kafkaMsg.Data, &unbanData); err != nil {
+                    log.Printf("Failed to parse remove from blacklist data: %v", err)
+                    continue
+                }
+                err = handleUnbanPlayer(conn, kafkaMsg.CorrelationId, unbanData)
+
+            case "get_blacklist":
+                var inputData struct {
+                    LobbyId  int64 `json:"lobby_id"`
+                    HostId    int64  `json:"host_id"`
+                }
+                if err := json.Unmarshal(kafkaMsg.Data, &inputData); err != nil {
+                    log.Printf("Failed to parse get blacklist data: %v", err)
+                    continue
+                }
+                err = handleGetBlacklist(conn, kafkaMsg.CorrelationId, inputData)
 
             case "server_info":
                 err = handleServerInfo(kafkaMsg.CorrelationId)
@@ -1259,6 +1291,18 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
     }
     defer tx.Rollback(context.Background())
 
+    var isBlacklisted bool
+    err = tx.QueryRow(context.Background(),
+        `SELECT EXISTS(SELECT 1 FROM lobby_blacklist WHERE lobby_id = $1 AND player_id = $2)`,
+        joinData.LobbyId, joinData.PlayerId).Scan(&isBlacklisted)
+
+    if err != nil {
+        return fmt.Errorf("failed to check player blacklist status: %w", err)
+    }
+
+    if isBlacklisted {
+        return sendAnswerResponse(correlation_id, false, "DBAnswerPlayerIsBlacklisted")
+    }
 
     var existingLobbyId int64
     err = tx.QueryRow(context.Background(),
@@ -1593,6 +1637,15 @@ func handleBanPlayer(conn *pgx.Conn, correlationId string, banData struct {
     }
 
     _, err = tx.Exec(context.Background(),
+        `INSERT INTO lobby_blacklist(lobby_id, player_id, banned_by_id, reason, banned_at)
+        VALUES($1, $2, $3, $4, $5)`,
+        banData.LobbyId, banData.PlayerId, banData.HostId, "Banned by host", time.Now())
+
+    if err != nil {
+        return fmt.Errorf("failed to add player to blacklist: %w", err)
+    }
+
+    _, err = tx.Exec(context.Background(),
         `DELETE FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
         banData.LobbyId, banData.PlayerId)
 
@@ -1906,6 +1959,29 @@ func checkAndCreateTables(conn *pgx.Conn) error {
             return err
         }
         log.Println("Table 'lobby_players' created successfully")
+    }
+
+    var blacklistTableExists bool
+    err = conn.QueryRow(context.Background(),
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'lobby_blacklist')").Scan(&blacklistTableExists)
+    if err != nil {
+        return err
+    }
+
+    if !blacklistTableExists {
+        _, err := conn.Exec(context.Background(),
+            `CREATE TABLE lobby_blacklist (
+                id BIGSERIAL PRIMARY KEY,
+                lobby_id BIGINT,
+                player_id BIGINT,
+                banned_by_id BIGINT,
+                reason TEXT,
+                banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`)
+        if err != nil {
+            return err
+        }
+        log.Println("Table 'lobby_blacklist' created successfully")
     }
 
     return nil
@@ -2276,5 +2352,119 @@ func handleServerInfo(correlationId string) error {
     }
 
     log.Printf("Sent server info response for correlation_id %s", correlationId)
+    return nil
+}
+
+func handleUnbanPlayer(conn *pgx.Conn, correlationId string, unbanData struct {
+    LobbyId  int64 `json:"lobby_id"`
+    HostId   int64 `json:"host_id"`
+    PlayerId int64 `json:"player_id"`
+}) error {
+
+    var isHost bool
+    err := conn.QueryRow(context.Background(),
+        `SELECT host FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
+        unbanData.LobbyId, unbanData.HostId).Scan(&isHost)
+
+    if err != nil {
+        if err == pgx.ErrNoRows {
+            isHost = false
+        } else {
+            return fmt.Errorf("failed to query lobby host: %w", err)
+        }
+    }
+
+    if !isHost {
+        return sendAnswerResponse(correlationId, false, "DBAnswerOnlyHostCanUnbanPlayer")
+    }
+
+    result, err := conn.Exec(context.Background(),
+        `DELETE FROM lobby_blacklist WHERE lobby_id = $1 AND player_id = $2`,
+        unbanData.LobbyId, unbanData.PlayerId)
+
+    if err != nil {
+        return fmt.Errorf("failed to remove player from blacklist: %w", err)
+    }
+
+    var success bool
+    if result.RowsAffected() == 0 {
+        log.Printf("Player %d not found in blacklist for lobby %d", unbanData.PlayerId, unbanData.LobbyId)
+        return sendAnswerResponse(correlationId, false, "DBAnswerPlayerNotBanned")
+    }
+
+    log.Printf("Removed player %d from blacklist for lobby %d", unbanData.PlayerId, unbanData.LobbyId)
+    return sendAnswerResponse(correlationId, success, "")
+}
+
+func handleGetBlacklist(conn *pgx.Conn, correlationId string, inputData struct {
+    LobbyId  int64 `json:"lobby_id"`
+    HostId   int64 `json:"host_id"`
+}) error {
+    var isHost bool
+    err := conn.QueryRow(context.Background(),
+        `SELECT host FROM lobby_players WHERE lobby_id = $1 AND player_id = $2`,
+        inputData.LobbyId, inputData.HostId).Scan(&isHost)
+
+    if err != nil {
+        if err == pgx.ErrNoRows {
+            isHost = false
+        } else {
+            return fmt.Errorf("failed to query lobby host: %w", err)
+        }
+    }
+
+    if !isHost {
+        return sendAnswerResponse(correlationId, false, "DBAnswerOnlyHostCanUnbanPlayer")
+    }
+
+    blacklist := make([]BlacklistData, 0)
+
+    rows, err := conn.Query(context.Background(),
+        `SELECT id, lobby_id, player_id, banned_by_id, reason, banned_at
+         FROM lobby_blacklist
+         WHERE lobby_id = $1`,
+        inputData.LobbyId)
+    if err != nil {
+        return fmt.Errorf("failed to query blacklist: %w", err)
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var entry BlacklistData
+        if err := rows.Scan(&entry.Id, &entry.LobbyId, &entry.PlayerId, &entry.BannedById, &entry.Reason, &entry.BannedAt); err != nil {
+            return fmt.Errorf("failed to scan blacklist entry: %w", err)
+        }
+        blacklist = append(blacklist, entry)
+    }
+
+    response := struct {
+        CorrelationId string         `json:"correlation_id"`
+        Success bool `json:"success"`
+        Blacklist     []BlacklistData `json:"blacklist"`
+        Error string `json:"error"`
+
+    }{
+        CorrelationId: correlationId,
+        Success:       true,
+        Blacklist:     blacklist,
+        Error:         "",
+    }
+
+    responseBytes, err := json.Marshal(response)
+    if err != nil {
+        return fmt.Errorf("failed to marshal blacklist response: %w", err)
+    }
+
+    producer_topic := "db_bot"
+    err = producer.Produce(&kafka.Message{
+        TopicPartition: kafka.TopicPartition{Topic: &producer_topic, Partition: kafka.PartitionAny},
+        Value:          responseBytes,
+    }, nil)
+
+    if err != nil {
+        return fmt.Errorf("failed to send blacklist response: %w", err)
+    }
+
+    log.Printf("Sent blacklist for lobby_id %d: %d entries", inputData.LobbyId, len(blacklist))
     return nil
 }

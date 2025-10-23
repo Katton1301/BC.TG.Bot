@@ -25,7 +25,7 @@ def create_keyboards():
             resize_keyboard=True,
             one_time_keyboard=True
         )
-        game[_lang] =  ReplyKeyboardMarkup(
+        game[_lang] = ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text=phrases.dict('singlePlay', _lang)), KeyboardButton(text=phrases.dict('botPlay', _lang))],
                 [KeyboardButton(text=phrases.dict('randomPlay', _lang))],
@@ -68,6 +68,7 @@ def create_keyboards():
                 [KeyboardButton(text=phrases.dict('startGame', _lang))],
                 [KeyboardButton(text=phrases.dict('ready', _lang))],
                 [KeyboardButton(text=phrases.dict('banPlayer', _lang))],
+                [KeyboardButton(text=phrases.dict('unbanPlayer', _lang))],
                 [KeyboardButton(text=phrases.dict('leaveLobby', _lang))],
             ],
             resize_keyboard=True,
@@ -78,6 +79,7 @@ def create_keyboards():
                 [KeyboardButton(text=phrases.dict('startGame', _lang))],
                 [KeyboardButton(text=phrases.dict('notReady', _lang))],
                 [KeyboardButton(text=phrases.dict('banPlayer', _lang))],
+                [KeyboardButton(text=phrases.dict('unbanPlayer', _lang))],
                 [KeyboardButton(text=phrases.dict('leaveLobby', _lang))],
             ],
             resize_keyboard=True,
@@ -141,7 +143,7 @@ def create_keyboards():
 def get_lobby_keyboard(isHost, isReady, _lang):
     return lobby[_lang][isHost * 2 + isReady]
 
-def get_ban_player_keyboard(lobby_players, lobby_names, _lang):
+def get_player_keyboard(lobby_players, lobby_names, _lang):
     keyboard = []
     buttons_row = []
 

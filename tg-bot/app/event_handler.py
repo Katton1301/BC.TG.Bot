@@ -203,7 +203,7 @@ class EventHandler:
                     text=phrases.dict("errorLobby", lang)
                 )
                 if error.lobby_id != 0:
-                    [ok, inner_error] = await self._leave_lobby(user_id, error.lobby_id)
+                    [ok, inner_error] = await self._leave_lobby(user_id, error.lobby_id, False)
                     if not ok:
                         inner_error = Error(ErrorLevel.CRITICAL, inner_error.Message())
                         inner_error.lobby_id = None
@@ -588,7 +588,7 @@ class EventHandler:
                 [ok, error] = await self._send_give_up_to_other_players(steps[player_i], lang, current_players)
                 if not ok: return [ok, error]
 
-            await self.bot.send_message( chat_id=player_id, text=phrases.dict("youGaveUp", lang), reply_markup=kb.main[lang] )
+            await self.bot.send_message( chat_id=player_id, text=phrases.dict("youGaveUp", lang))
 
             if game_response['game_stage'] == 'FINISHED':
                 [ok, error] = await self._finish_game(player_id, game_id, names, False)
@@ -1252,11 +1252,14 @@ class EventHandler:
                         reply_markup=ReplyKeyboardRemove()
                     )
                     return [True, None]
+                
+                [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.choose_lobby_type)
+                if not ok: return [ok, error]
 
                 await self.bot.send_message(
                     chat_id=player_id,
                     text=phrases.dict(error_msg, lang),
-                    reply_markup=ReplyKeyboardRemove()
+                    reply_markup=kb.lobby_types[lang]
                 )
                 return [True, None]
 
@@ -1400,7 +1403,7 @@ class EventHandler:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
 
-    async def _leave_lobby(self, player_id, lobby_id):
+    async def _leave_lobby(self, player_id, lobby_id, notify_other):
         lang = self.langs.get(player_id, "en")
         try:
             [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
@@ -1423,19 +1426,15 @@ class EventHandler:
             if lobby_players is None:
                 raise Exception(error.Message())
 
-            [ok, error] = await self._send_player_leave_lobby(player_id, lobby_id, lobby_players, lobby_names)
-            if not ok:
-                raise Exception(error.Message())
+            if notify_other:
+                [ok, error] = await self._send_player_leave_lobby(player_id, lobby_id, lobby_players, lobby_names)
+                if not ok:
+                    raise Exception(error.Message())
 
 
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.choose_game)
             if not ok: return [ok, error]
 
-            await self.bot.send_message(
-                chat_id=player_id,
-                text=phrases.dict("chooseGameMode", lang),
-                reply_markup=kb.game[lang]
-            )
             return [True, None]
 
         except asyncio.TimeoutError:
@@ -1504,6 +1503,72 @@ class EventHandler:
                 error = Error(ErrorLevel.LOBBY_ERROR, msg)
                 error.setLobbyId(lobby_id)
                 return [False, error]
+
+
+    async def _get_blacklist(self, lobby_id, host_id):
+        try:
+            get_msg = {
+                "command": "get_blacklist",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "host_id": host_id,
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            response = await self.kafka.request_to_db(get_msg, timeout=5)
+            if "timeout" in response and response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not response or 'blacklist' not in response:
+                raise Exception("Invalid response from database: missing blacklist data")
+
+            return [response['blacklist'], None]
+
+        except asyncio.TimeoutError:
+            lang = self.langs.get(host_id, "en")
+            msg = phrases.dict("errorTimeout", lang)
+            return [False, Error(ErrorLevel.WARNING, msg)]
+        except Exception as e:
+            msg = f"Failed to get blacklist: {str(e)}"
+            return [None, Error(ErrorLevel.ERROR, msg)]
+
+    async def _unban_player(self, lobby_id, host_id, player_id):
+        try:
+            lang = self.langs.get(host_id, "en")
+            remove_msg = {
+                "command": "unban_player",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "host_id": host_id,
+                    "player_id": player_id
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            response = await self.kafka.request_to_db(remove_msg, timeout=5)
+            if "timeout" in response and response["timeout"]:
+                raise asyncio.TimeoutError()
+            if not response or 'success' not in response:
+                raise Exception("Invalid response from database: missing success field")
+
+            if not response['success']:
+                error_msg = response['error']
+                if error_msg == "DBAnswerOnlyHostCanUnbanPlayer":
+                    await self.bot.send_message(
+                        chat_id=host_id,
+                        text=phrases.dict("youDontHaveSufficientPermissions", lang)
+                    )
+                    return [True, None]
+                return [False, Error(ErrorLevel.WARNING, error_msg)]
+
+            return [True, None]
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            return [False, Error(ErrorLevel.WARNING, msg)]
+        except Exception as e:
+            msg = f"Failed to unban player {player_id}: {str(e)}"
+            return [False, Error(ErrorLevel.ERROR, msg)]
 
 
     """public--------------------------------------------------------------------------------------------------"""
@@ -2160,7 +2225,7 @@ class EventHandler:
             return False
 
 
-    async def exit_to_menu(self, message: Any, state: FSMContext ):
+    async def exit_to_menu(self, message: Any, force):
         player_id = message.from_user.id
         if not await self._handle_server_available(player_id):
             return False
@@ -2173,7 +2238,7 @@ class EventHandler:
                 return False
 
             if lobby_id != 0:
-                [ok, error] = await self._leave_lobby(player_id, lobby_id)
+                [ok, error] = await self._leave_lobby(player_id, lobby_id, False)
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
@@ -2185,7 +2250,7 @@ class EventHandler:
             game_id = game_info['game_id']
             finished = game_info['finished']
 
-            if not finished:
+            if not finished and not force:
                 await self.bot.send_message(
                     chat_id=player_id,
                     text=phrases.dict("gameNotFinished", lang)
@@ -2564,7 +2629,10 @@ class EventHandler:
                 await self.change_player(message, state, PlayerStates.choose_game)
                 return False
 
-            await self._enter_by_lobby_id(player_id, lobby_id)
+            [ok, error] = await self._enter_by_lobby_id(player_id, lobby_id)
+            if not ok:
+                await self._handle_error(player_id, error)
+                return False
             return True
 
         except asyncio.TimeoutError:
@@ -2640,7 +2708,7 @@ class EventHandler:
                 )
                 return False
 
-            keyboard_markup = kb.get_ban_player_keyboard(players_to_ban, lobby_names, lang)
+            keyboard_markup = kb.get_player_keyboard(players_to_ban, lobby_names, lang)
 
             await self.change_player(message, state, PlayerStates.ban_player_choose)
             await self.bot.send_message(
@@ -2703,12 +2771,12 @@ class EventHandler:
             if player_to_ban is None:
                 if phrases.checkPhrase("back", str(message.text)):
                     player_back = True
-
-                await self.bot.send_message(
-                    chat_id=player_id,
-                    text=phrases.dict("invalidPlayerName", lang)
-                )
-                return False
+                else:
+                    await self.bot.send_message(
+                        chat_id=player_id,
+                        text=phrases.dict("invalidPlayerName", lang)
+                    )
+                    return False
 
             if not player_back:
                 [ok, error] = await self._ban_player(player_id, player_to_ban, lobby_id, lobby_names, lobby_players)
@@ -2814,14 +2882,20 @@ class EventHandler:
         player_id = message.from_user.id
         if not await self._handle_server_available(player_id):
             return False
+        lang = self.langs.get(player_id, "en")
         [lobby_id, error] = await self._get_lobby_id(player_id, True)
         if lobby_id is None:
             await self._handle_error(player_id, error)
             return False
-        [ok, error] = await self._leave_lobby(player_id, lobby_id)
+        [ok, error] = await self._leave_lobby(player_id, lobby_id, True)
         if not ok:
             await self._handle_error(player_id, error)
             return False
+        await self.bot.send_message(
+                chat_id=player_id,
+                text=phrases.dict("chooseGameMode", lang),
+                reply_markup=kb.game[lang]
+            )
         return True
 
 
@@ -2935,4 +3009,151 @@ class EventHandler:
                 error = Error(ErrorLevel.LOBBY_ERROR, msg)
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
+            return False
+
+
+    async def unban_player(self, message: types.Message, state: FSMContext):
+        player_id = message.from_user.id
+        if not await self._handle_server_available(player_id):
+            return False
+        try:
+            lang = self.langs.get(player_id, "en")
+            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            if lobby_id is None:
+                await self._handle_error(player_id, error)
+                return False
+
+            [blacklist, error] = await self._get_blacklist(lobby_id, player_id)
+            if blacklist is None:
+                if error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
+                    error = Error(ErrorLevel.ERROR, phrases.dict("youDontHaveSufficientPermissions", lang))
+                await self._handle_error(player_id, error)
+                return False
+
+            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            if lobby_names is None:
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
+                error.setLobbyId(lobby_id)
+                await self._handle_error(player_id, error)
+                return False
+
+            players_to_unban = []
+            for player in blacklist:
+                if player['player_id'] != player_id:
+                    players_to_unban.append(player)
+
+            if not players_to_unban:
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict("emptyBlacklist", lang)
+                )
+                return False
+
+            keyboard_markup = kb.get_player_keyboard(players_to_unban, lobby_names, lang)
+
+            await self.change_player(message, state, PlayerStates.unban_player_choose)
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=phrases.dict("whichPlayerNeedUnban", lang),
+                reply_markup=keyboard_markup
+            )
+            return True
+
+        except Exception as e:
+            msg = f"Failed to get banned players for user {player_id}: {str(e)}"
+            await self._handle_error(player_id, Error(ErrorLevel.ERROR, msg))
+            return False
+
+
+    async def choose_unban_player(self, message: types.Message, state: FSMContext):
+        player_id = message.from_user.id
+        lang = self.langs.get(player_id, "en")
+        try:
+            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            if lobby_id is None:
+                await self._handle_error(player_id, error)
+                return False
+
+            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            if lobby_names is None:
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
+                error.setLobbyId(lobby_id)
+                await self._handle_error(player_id, error)
+                return False
+
+            player_to_unban = None
+            for name_data in lobby_names:
+                if name_data['name'] == message.text:
+                    player_to_unban = name_data['id']
+                    break
+
+            player_back = False
+            if player_to_unban is None:
+                if phrases.checkPhrase("back", str(message.text)):
+                    player_back = True
+                else:
+                    await self.bot.send_message(
+                        chat_id=player_id,
+                        text=phrases.dict("invalidPlayerName", lang)
+                    )
+                    return False
+
+
+            if not player_back:
+                [blacklist, error] = await self._get_blacklist(lobby_id, player_id)
+                if blacklist is None:
+                    if error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
+                        error = Error(ErrorLevel.ERROR, phrases.dict("youDontHaveSufficientPermissions", lang))
+                    await self._handle_error(player_id, error)
+                    return False
+
+                player_banned = False
+                for player in blacklist:
+                    if player['player_id'] == player_to_unban:
+                        player_banned = True
+                        break
+
+                if not player_banned:
+                    await self.bot.send_message(
+                        chat_id=player_id,
+                        text=phrases.dict("DBAnswerPlayerNotBanned", lang)
+                    )
+                    return False
+
+                [ok, error] = await self._unban_player(lobby_id, player_id, player_to_unban)
+                if not ok:
+                    await self._handle_error(player_id, error)
+                    return False
+
+            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            if lobby_players is None:
+                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
+                error.setLobbyId(lobby_id)
+                await self._handle_error(player_id, error)
+                return False
+
+            [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
+            if not ok:
+                await self._handle_error(player_id, error)
+                return False
+
+            current_player = next((p for p in lobby_players if p['player_id'] == player_id), None)
+            if current_player:
+                is_host = current_player['host']
+                is_ready = current_player['is_ready']
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict("youInLobby", lang),
+                    reply_markup=kb.get_lobby_keyboard(is_host, is_ready, lang)
+                )
+            return True
+
+        except Exception as e:
+            msg = f"Failed to unban player: {str(e)}"
+            await self._handle_error(player_id, Error(ErrorLevel.ERROR, msg))
+            await self.change_player(message, state, PlayerStates.manage_blacklist)
+            await message.answer(
+                "Blacklist Management:",
+                reply_markup=kb.get_manage_blacklist_keyboard(lang)
+            )
             return False

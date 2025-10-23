@@ -18,6 +18,7 @@ class PlayerStates(StatesGroup):
     enter_lobby_id = State()
     enter_password = State()
     ban_player_choose = State()
+    unban_player_choose = State()
 
 def isFreeState(state: State) -> bool:
     return state == PlayerStates.free_state or \

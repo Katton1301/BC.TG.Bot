@@ -111,13 +111,13 @@ class MessageController:
 
     async def choose_exit_game_after_give_up(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]
-        if phrases.checkPhrase("stay", str(message.text).lower()):
+        if phrases.checkPhrase("stay", str(message.text)):
             ok = await self.eh.change_player(message, state, PlayerStates.waiting_game_end)
             if not ok:
                 return
             await message.answer(phrases.dict("waitingEndGame", lang), reply_markup=ReplyKeyboardRemove())
-        elif phrases.checkPhrase("exit", str(message.text).lower()):
-            await self.eh.exit_to_menu(message, state)
+        elif phrases.checkPhrase("exit", str(message.text)):
+            await self.eh.exit_to_menu(message, True)
         else:
             await message.answer(phrases.dict("chooseMenuItem", lang), reply_markup=kb.exit_or_not[lang])
 
@@ -153,7 +153,7 @@ class MessageController:
         if await state.get_state() is None:
             await self.eh.new_player_start(callback, state)
         else:
-            await self.eh.exit_to_menu(callback, state)
+            await self.eh.exit_to_menu(callback, False)
         await callback.answer()
 
     async def callback_stay_in_lobby(self, callback: types.CallbackQuery, state: FSMContext):
@@ -171,22 +171,27 @@ class MessageController:
         await self.eh.create_lobby_with_password(message, state)
 
     async def state_in_lobby(self, message: types.Message, state: FSMContext):
-        if phrases.checkPhrase("ready", str(message.text)):
+        lang = self.eh.langs[message.from_user.id]
+        if phrases.checkPhrase("startGame", str(message.text)):
+            await self.eh.start_lobby_game(message, state)
+        elif phrases.checkPhrase("ready", str(message.text)):
             await self.eh.set_player_ready_state(message, state, True)
         elif phrases.checkPhrase("notReady", str(message.text)):
             await self.eh.set_player_ready_state(message, state, False)
         elif phrases.checkPhrase("leaveLobby", str(message.text)):
             await self.eh.leave_lobby(message, state)
-        elif phrases.checkPhrase("startGame", str(message.text)):
-            await self.eh.start_lobby_game(message, state)
         elif phrases.checkPhrase("banPlayer", str(message.text)):
             await self.eh.delete_player(message, state)
+        elif phrases.checkPhrase("unbanPlayer", str(message.text)):
+            await self.eh.unban_player(message, state)
         else:
-            lang = self.eh.langs[message.from_user.id]
             await message.answer(phrases.dict("chooseMenuItem", lang))
 
     async def state_ban_player_choose(self, message: types.Message, state: FSMContext):
         await self.eh.choose_ban_player(message, state)
+
+    async def state_unban_player_choose(self, message: types.Message, state: FSMContext):
+        await self.eh.choose_unban_player(message, state)
 
     async def state_choose_lobby_type(self, message: types.Message, state: FSMContext):
         lang = self.eh.langs[message.from_user.id]

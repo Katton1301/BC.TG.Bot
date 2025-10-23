@@ -45,7 +45,7 @@
         "gaveUp": "Игрок Сдался!",
         "back": "Назад",
         "waitingForOpponent": "Ожидаем оппонента...",
-        "warningDigit": "Сначала выбирите режим игры и войдите в неё!",
+        "warningDigit": "Сначала выберите режим игры и войдите в неё!",
         "makeStep": "cделал ход",
         "warningNotDigit": "Вводите только число!",
         "chooseMenuItem": "Выберите пункт меню",
@@ -107,6 +107,7 @@
         "exit": "Выйти",
         "youveFinished": "Вы закончили игру. Ожидаем остальных...",
         "pleaseWaitGameEnd": "Пожалуйста дождитесь конца игры!",
+        "emptyBlacklist": "В лобби нет забаненных игроков",
         "youDontHaveSufficientPermissions": "У вас недостаточно прав!",
         "DBAnswerLobbyNotFound": "Лобби не найдено",
         "DBAnswerLobbyCannotStartGameInCurrentStatus": "Нельзя начать игру при текущем статусе лобби",
@@ -125,7 +126,11 @@
         "invalidPlayerName": "Неверное имя игрока",
         "DBAnswerOnlyHostCanBanPlayers": "Только хост может банить игроков",
         "DBAnswerPlayerNotInLobby": "Игрок не в лобби",
-        "DBAnswerCannotBanHost": "Невозможно забанить хоста"
+        "DBAnswerCannotBanHost": "Невозможно забанить хоста",
+        "DBAnswerPlayerIsBlacklisted": "Вы забанены в этом лобби",
+        "DBAnswerPlayerNotBanned": "Игрок не забанен",
+        "unbanPlayer": "Разбанить игрока",
+        "whichPlayerNeedUnban": "Какого игрока нужно разбанить?"
     },
     "en": {
         "name": "English",
@@ -235,6 +240,7 @@
         "exit": "Exit",
         "youveFinished": "You've completed the game. Waiting for the rest...",
         "pleaseWaitGameEnd": "Please wait until the end of the game!",
+        "emptyBlacklist": "There are no banned players in the lobby",
         "youDontHaveSufficientPermissions": "You don't have sufficient permissions.",
         "DBAnswerLobbyNotFound": "Lobby not found",
         "DBAnswerLobbyCannotStartGameInCurrentStatus": "Cannot start game in current lobby status",
@@ -253,6 +259,10 @@
         "invalidPlayerName": "Invalid player name",
         "DBAnswerOnlyHostCanBanPlayers": "Only host can ban players",
         "DBAnswerPlayerNotInLobby": "Player not in lobby",
-        "DBAnswerCannotBanHost": "Cannot ban the host"
+        "DBAnswerCannotBanHost": "Cannot ban the host",
+        "DBAnswerPlayerIsBlacklisted": "You are banned from this lobby",
+        "DBAnswerPlayerNotBanned": "Player not banned",
+        "unbanPlayer": "Unban player",
+        "whichPlayerNeedUnban": "Which player need unban?"
     }
 }
