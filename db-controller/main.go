@@ -529,12 +529,15 @@ func main() {
                 err = handleStartLobbyGame(conn, kafkaMsg.CorrelationId, lobbyData)
 
             case "get_random_lobby_id":
-                var server_id int64
-                if err := json.Unmarshal(kafkaMsg.Data, &server_id); err != nil {
+                var inputData struct {
+                    ServerId   int64  `json:"server_id"`
+                    PlayerId  int64  `json:"player_id"`
+                }
+                if err := json.Unmarshal(kafkaMsg.Data, &inputData); err != nil {
                     log.Printf("Failed to parse server id: %v", err)
                     continue
                 }
-                err = handleGetRandomLobbyId(conn, kafkaMsg.CorrelationId, server_id)
+                err = handleGetRandomLobbyId(conn, kafkaMsg.CorrelationId, inputData)
 
             case "get_lobby_id":
                 var player_id int64
@@ -1383,7 +1386,12 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
         joinData.LobbyId, joinData.PlayerId).Scan(&existingPlayer, &existingAccess)
 
     if err == nil {
-        if hasAccess && !existingAccess {
+        if !hasAccess {
+                if err := tx.Commit(context.Background()); err != nil {
+                    return fmt.Errorf("failed to commit transaction: %w", err)
+                }
+                return sendAnswerResponse(correlation_id, false, "DBAnswerPasswordNeeded")
+        } else if !existingAccess {
             if playerCount >= lobbyPlayerLimit {
                 return sendAnswerResponse(correlation_id, false, "DBAnswerLobbyIsFull")
             }
@@ -1394,7 +1402,7 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
                 return fmt.Errorf("failed to update player access: %w", err)
             }
             log.Printf("Updated player %d access to true and in_lobby to true in lobby %d", joinData.PlayerId, joinData.LobbyId)
-        } else if existingAccess {
+        } else {
             _, err = tx.Exec(context.Background(),
                 `UPDATE lobby_players SET in_lobby = true WHERE lobby_id = $1 AND player_id = $2`,
                 joinData.LobbyId, joinData.PlayerId)
@@ -2079,20 +2087,43 @@ func sendAnswerResponse(correlation_id string, success bool, errorMessage string
     return err
 }
 
-func handleGetRandomLobbyId(conn *pgx.Conn, correlationId string, serverId int64) error {
-    var lobbyId int64
-    err := conn.QueryRow(context.Background(),
-        `SELECT id FROM lobbies
-         WHERE server_id = $1 AND is_private = false AND status != 'STARTED'
-         ORDER BY RANDOM() LIMIT 1`,
-        serverId).Scan(&lobbyId)
-
+func handleGetRandomLobbyId(conn *pgx.Conn, correlationId string, inputData struct {
+    ServerId   int64  `json:"server_id"`
+    PlayerId   int64  `json:"player_id"`
+}) error {
+    rows, err := conn.Query(context.Background(),
+        `SELECT l.id 
+         FROM lobbies l
+         WHERE l.server_id = $1 
+           AND l.is_private = false 
+           AND l.status != 'STARTED'
+           AND NOT EXISTS (
+               SELECT 1 FROM lobby_blacklist lb 
+               WHERE lb.lobby_id = l.id AND lb.player_id = $2
+           )`,
+        inputData.ServerId, inputData.PlayerId)
+    
     if err != nil {
-        if err == pgx.ErrNoRows {
-            lobbyId = 0
-        } else {
-            return fmt.Errorf("failed to query random lobby: %w", err)
+        return fmt.Errorf("failed to query available lobbies: %w", err)
+    }
+    defer rows.Close()
+
+    var availableLobbyIds []int64
+    for rows.Next() {
+        var lobbyId int64
+        if err := rows.Scan(&lobbyId); err != nil {
+            return fmt.Errorf("failed to scan lobby id: %w", err)
         }
+        availableLobbyIds = append(availableLobbyIds, lobbyId)
+    }
+
+    var lobbyId int64
+    if len(availableLobbyIds) > 0 {
+        rand.Seed(time.Now().UnixNano())
+        randomIndex := rand.Intn(len(availableLobbyIds))
+        lobbyId = availableLobbyIds[randomIndex]
+    } else {
+        lobbyId = 0
     }
 
     response := IDResponse{
@@ -2116,7 +2147,8 @@ func handleGetRandomLobbyId(conn *pgx.Conn, correlationId string, serverId int64
         return fmt.Errorf("failed to send random lobby response: %w", err)
     }
 
-    log.Printf("Sent random lobby ID %d for server_id %d", lobbyId, serverId)
+    log.Printf("Sent random lobby ID %d for server_id %d, player_id %d (from %d available lobbies)", 
+        lobbyId, inputData.ServerId, inputData.PlayerId, len(availableLobbyIds))
     return nil
 }
 
@@ -2386,14 +2418,13 @@ func handleUnbanPlayer(conn *pgx.Conn, correlationId string, unbanData struct {
         return fmt.Errorf("failed to remove player from blacklist: %w", err)
     }
 
-    var success bool
     if result.RowsAffected() == 0 {
         log.Printf("Player %d not found in blacklist for lobby %d", unbanData.PlayerId, unbanData.LobbyId)
         return sendAnswerResponse(correlationId, false, "DBAnswerPlayerNotBanned")
     }
 
     log.Printf("Removed player %d from blacklist for lobby %d", unbanData.PlayerId, unbanData.LobbyId)
-    return sendAnswerResponse(correlationId, success, "")
+    return sendAnswerResponse(correlationId, true, "")
 }
 
 func handleGetBlacklist(conn *pgx.Conn, correlationId string, inputData struct {
@@ -2418,11 +2449,14 @@ func handleGetBlacklist(conn *pgx.Conn, correlationId string, inputData struct {
     }
 
     blacklist := make([]BlacklistData, 0)
+    bannedPlayerNames := make([]NameData, 0)
 
     rows, err := conn.Query(context.Background(),
-        `SELECT id, lobby_id, player_id, banned_by_id, reason, banned_at
-         FROM lobby_blacklist
-         WHERE lobby_id = $1`,
+        `SELECT lb.id, lb.lobby_id, lb.player_id, lb.banned_by_id, lb.reason, lb.banned_at,
+                p.username
+         FROM lobby_blacklist lb
+         LEFT JOIN players p ON lb.player_id = p.id
+         WHERE lb.lobby_id = $1`,
         inputData.LobbyId)
     if err != nil {
         return fmt.Errorf("failed to query blacklist: %w", err)
@@ -2431,22 +2465,31 @@ func handleGetBlacklist(conn *pgx.Conn, correlationId string, inputData struct {
 
     for rows.Next() {
         var entry BlacklistData
-        if err := rows.Scan(&entry.Id, &entry.LobbyId, &entry.PlayerId, &entry.BannedById, &entry.Reason, &entry.BannedAt); err != nil {
+        var username string
+        if err := rows.Scan(&entry.Id, &entry.LobbyId, &entry.PlayerId, &entry.BannedById, 
+            &entry.Reason, &entry.BannedAt, &username); err != nil {
             return fmt.Errorf("failed to scan blacklist entry: %w", err)
         }
         blacklist = append(blacklist, entry)
+        
+        bannedPlayerNames = append(bannedPlayerNames, NameData{
+            ID:       entry.PlayerId,
+            IsPlayer: true,
+            Name:     username,
+        })
     }
 
     response := struct {
-        CorrelationId string         `json:"correlation_id"`
-        Success bool `json:"success"`
-        Blacklist     []BlacklistData `json:"blacklist"`
-        Error string `json:"error"`
-
+        CorrelationId   string         `json:"correlation_id"`
+        Success         bool           `json:"success"`
+        Blacklist       []BlacklistData `json:"blacklist"`
+        BannedPlayers   []NameData     `json:"banned_players"`
+        Error           string         `json:"error"`
     }{
         CorrelationId: correlationId,
         Success:       true,
         Blacklist:     blacklist,
+        BannedPlayers: bannedPlayerNames,
         Error:         "",
     }
 
@@ -2465,6 +2508,7 @@ func handleGetBlacklist(conn *pgx.Conn, correlationId string, inputData struct {
         return fmt.Errorf("failed to send blacklist response: %w", err)
     }
 
-    log.Printf("Sent blacklist for lobby_id %d: %d entries", inputData.LobbyId, len(blacklist))
+    log.Printf("Sent blacklist for lobby_id %d: %d entries, %d banned players", 
+        inputData.LobbyId, len(blacklist), len(bannedPlayerNames))
     return nil
 }

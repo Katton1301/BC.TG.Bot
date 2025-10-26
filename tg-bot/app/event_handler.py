@@ -242,7 +242,7 @@ class EventHandler:
             return [True, None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
+            lang = self.langs.get(player['player_id'], "en")
             msg = phrases.dict("errorTimeout", lang)
             return [False, Error(ErrorLevel.WARNING, msg)]
 
@@ -264,7 +264,7 @@ class EventHandler:
             return [True, None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
+            lang = self.langs.get(player['player_id'], "en")
             msg = phrases.dict("errorTimeout", lang)
             return [False, Error(ErrorLevel.WARNING, msg)]
         except Exception as e:
@@ -1034,12 +1034,11 @@ class EventHandler:
         try:
             result = ""
             player_step = steps[player_i]
-            game_value = player_step["game_value"]
             result += f"{phrases.dict('step', lang)} {step_number}"
             cur_steps = [d for d in steps if (d['step'] == step_number and d['id'] != player_step['id'])]
             if len(cur_steps) > 0:
-                if step_number == player_step['step']:
-                    result += f"\n{phrases.dict('you', lang)} -  {game_value:04}: {player_step['bulls']}{phrases.dict('bulls', lang)} {player_step['cows']}{phrases.dict('cows', lang)}"
+                if step_number == player_step['step'] and not player_step['give_up']:
+                    result += f"\n{phrases.dict('you', lang)} -  {player_step["game_value"]:04}: {player_step['bulls']}{phrases.dict('bulls', lang)} {player_step['cows']}{phrases.dict('cows', lang)}"
                 for i in range(len(cur_steps)):
                     name = next((d['name'] for d in names if d['id'] == cur_steps[i]['id'] and d['is_player'] == cur_steps[i]['player']), "Unknown")
                     if cur_steps[i]["player"]:
@@ -1048,7 +1047,7 @@ class EventHandler:
                         result += f"\n{phrases.dict('bot', lang)} {name}"
                     result += f" - {'*'*4}: {cur_steps[i]['bulls']}{phrases.dict('bulls', lang)} {cur_steps[i]['cows']}{phrases.dict('cows', lang)}"
             else:
-                result += f"\n{game_value:04}: {player_step['bulls']}{phrases.dict('bulls', lang)} {player_step['cows']}{phrases.dict('cows', lang)}"
+                result += f"\n{player_step["game_value"]:04}: {player_step['bulls']}{phrases.dict('bulls', lang)} {player_step['cows']}{phrases.dict('cows', lang)}"
             return [True, result]
 
         except Exception as e:
@@ -1521,8 +1520,16 @@ class EventHandler:
                 raise asyncio.TimeoutError()
             if not response or 'blacklist' not in response:
                 raise Exception("Invalid response from database: missing blacklist data")
+            if not response or 'banned_players' not in response:
+                raise Exception("Invalid response from database: missing banned_players data")
+            
+            blacklist = []
+            names = response['banned_players']
+            for player in response['blacklist']:
+                blacklist.append(player)
+                blacklist[-1]['name'] = next((n['name'] for n in names if n['id'] == player['player_id']), "Unknown")
 
-            return [response['blacklist'], None]
+            return [blacklist, None]
 
         except asyncio.TimeoutError:
             lang = self.langs.get(host_id, "en")
@@ -1982,7 +1989,7 @@ class EventHandler:
                 if cur_player['player_id'] == player_id:
                     player_in_game = True
                 name = next((d for d in names if cur_player['player_id'] == d['id']), None)
-                if name is not None and not cur_player['give_up']:
+                if name is not None:
                     current_players.append(name)
 
             if player_in_game:
@@ -1998,8 +2005,9 @@ class EventHandler:
                 await message.answer(result, reply_markup=ReplyKeyboardRemove())
             else:
                 for i in range(len(steps)):
-                    if steps[i]["player"] and not steps[i]['give_up']:
-                        [ok, result] = self._generate_steps_result(steps, i, lang, names, step_number)
+                    is_cur_player = next((True for d in current_players if d['id'] == steps[i]['id']), False)
+                    if steps[i]["player"] and is_cur_player:
+                        [ok, result] = self._generate_steps_result(steps, i, lang, current_players, step_number)
                         if not ok:
                             await self._handle_error(steps[i]['id'], Error(ErrorLevel.WARNING, result))
                         await self.bot.send_message( chat_id=steps[i]['id'], text=result, reply_markup=ReplyKeyboardRemove() )
@@ -2551,15 +2559,15 @@ class EventHandler:
                     return False
 
                 if error_msg == "DBAnswerInvalidPassword":
+                    await self.change_player(message, state, PlayerStates.choose_lobby_type)
                     await message.answer(
                         phrases.dict("wrongPassword", lang),
-                        reply_markup=kb.game[lang]
+                        reply_markup=kb.lobby_types[lang]
                     )
-                    await self.change_player(message, state, PlayerStates.choose_game)
                     return False
 
-                await message.answer(phrases.dict(error_msg, lang), reply_markup=kb.game[lang])
-                await self.change_player(message, state, PlayerStates.choose_game)
+                await self.change_player(message, state, PlayerStates.choose_lobby_type)
+                await message.answer(phrases.dict(error_msg, lang), reply_markup=kb.lobby_types[lang])
                 return False
 
             await self.change_player(message, state, PlayerStates.in_lobby)
@@ -2609,7 +2617,10 @@ class EventHandler:
         try:
             get_random_lobby_msg = {
                 "command": "get_random_lobby_id",
-                "data": SERVER_ID,
+                "data": {
+                    "server_id": SERVER_ID,
+                    "player_id": player_id,
+                },
                 "timestamp": str(datetime.now())
             }
 
@@ -2700,6 +2711,7 @@ class EventHandler:
             for player in lobby_players:
                 if player['player_id'] != player_id:
                     players_to_ban.append(player)
+                    players_to_ban[-1]['name'] = next((n['name'] for n in lobby_names if n['id'] == player['player_id']), "Unknown")
 
             if not players_to_ban:
                 await self.bot.send_message(
@@ -2708,7 +2720,7 @@ class EventHandler:
                 )
                 return False
 
-            keyboard_markup = kb.get_player_keyboard(players_to_ban, lobby_names, lang)
+            keyboard_markup = kb.get_player_keyboard(players_to_ban, lang)
 
             await self.change_player(message, state, PlayerStates.ban_player_choose)
             await self.bot.send_message(
@@ -3030,13 +3042,6 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
-            if lobby_names is None:
-                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
-                error.setLobbyId(lobby_id)
-                await self._handle_error(player_id, error)
-                return False
-
             players_to_unban = []
             for player in blacklist:
                 if player['player_id'] != player_id:
@@ -3049,7 +3054,7 @@ class EventHandler:
                 )
                 return False
 
-            keyboard_markup = kb.get_player_keyboard(players_to_unban, lobby_names, lang)
+            keyboard_markup = kb.get_player_keyboard(players_to_unban, lang)
 
             await self.change_player(message, state, PlayerStates.unban_player_choose)
             await self.bot.send_message(
@@ -3074,17 +3079,17 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
-            if lobby_names is None:
-                error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
-                error.setLobbyId(lobby_id)
+            [blacklist, error] = await self._get_blacklist(lobby_id, player_id)
+            if blacklist is None:
+                if error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
+                    error = Error(ErrorLevel.ERROR, phrases.dict("youDontHaveSufficientPermissions", lang))
                 await self._handle_error(player_id, error)
                 return False
 
             player_to_unban = None
-            for name_data in lobby_names:
-                if name_data['name'] == message.text:
-                    player_to_unban = name_data['id']
+            for banned_player in blacklist:
+                if banned_player['name'] == message.text:
+                    player_to_unban = banned_player['player_id']
                     break
 
             player_back = False
@@ -3100,25 +3105,6 @@ class EventHandler:
 
 
             if not player_back:
-                [blacklist, error] = await self._get_blacklist(lobby_id, player_id)
-                if blacklist is None:
-                    if error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
-                        error = Error(ErrorLevel.ERROR, phrases.dict("youDontHaveSufficientPermissions", lang))
-                    await self._handle_error(player_id, error)
-                    return False
-
-                player_banned = False
-                for player in blacklist:
-                    if player['player_id'] == player_to_unban:
-                        player_banned = True
-                        break
-
-                if not player_banned:
-                    await self.bot.send_message(
-                        chat_id=player_id,
-                        text=phrases.dict("DBAnswerPlayerNotBanned", lang)
-                    )
-                    return False
 
                 [ok, error] = await self._unban_player(lobby_id, player_id, player_to_unban)
                 if not ok:
