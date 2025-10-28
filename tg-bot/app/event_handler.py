@@ -98,7 +98,7 @@ class EventHandler:
                 "server_id": SERVER_ID,
             }
             game_response = await self.kafka.request_to_game(init_server, timeout=5)
-            ok = await self._verify_server_response(game_response)
+            ok = await self._verify_game_server_response(game_response)
             ok = ok and game_response['result'] == 1
             return ok
         except Exception as e:
@@ -123,7 +123,7 @@ class EventHandler:
             logger.error(msg)
             return False
 
-    async def _verify_server_response(self, response, user_id=None):
+    async def _verify_game_server_response(self, response, user_id=None):
         if response is None or "timeout" in response and response["timeout"]:
             if self.game_server_connected:
                 logger.error("Game server timeout detected, marking as unavailable")
@@ -136,7 +136,30 @@ class EventHandler:
                     )
             return False
         return True
-
+    
+    def _handle_db_server_response(self, response, lang):
+        if response is None:
+            return [None, Error(ErrorLevel.ERROR, "Database response is none")]
+        
+        if "timeout" in response and response["timeout"]:
+            msg = phrases.dict("errorTimeout", lang)
+            return [None, Error(ErrorLevel.WARNING, msg)]
+        
+        if ("Answer" not in response) or ("Error" not in response) or ("Data" not in response):
+            return [None, Error(ErrorLevel.ERROR, "Wrong database response format")]
+        
+        if response["Answer"] == "OK":
+            return [response["Data"], None]
+        elif response["Answer"] == "Error":
+            return [None, Error(ErrorLevel.ERROR, response["Error"])]
+        elif response["Answer"] == "Warning":
+            return [None, Error(ErrorLevel.WARNING, response["Error"])]
+        elif response["Answer"] == "Critical":
+            return [None, Error(ErrorLevel.CRITICAL, response["Error"])]
+        elif response["Answer"] == "Info":
+            return [None, Error(ErrorLevel.INFO, response["Error"])]
+        else:
+            return [None, Error(ErrorLevel.ERROR, response["Error"])]
 
     async def _handle_server_available(self, user_id):
         if not self.game_server_connected and user_id:
@@ -333,7 +356,7 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
+            if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid create game response from game service")
@@ -377,7 +400,7 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
+            if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid start game response from game service")
@@ -432,7 +455,7 @@ class EventHandler:
                 "game_brain": level,
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
+            if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid add computer response from game service")
@@ -461,7 +484,7 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
+            if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid start game response from game service")
@@ -508,7 +531,7 @@ class EventHandler:
                 "game_id": game_id
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
+            if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid give up game response from game service")
@@ -633,7 +656,7 @@ class EventHandler:
                     "game_id": game_id,
                 }
                 game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-                if not await self._verify_server_response(game_response, player_id):
+                if not await self._verify_game_server_response(game_response, player_id):
                     raise Exception("Server response verification failed")
                 if not game_response or 'result' not in game_response:
                     raise Exception("Invalid do step response from game service")
@@ -695,7 +718,7 @@ class EventHandler:
                 "game_id": game_id,
                 }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
+            if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid do step response from game service")
@@ -1892,7 +1915,7 @@ class EventHandler:
                 "game_value": game_value,
             }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_server_response(game_response, player_id):
+            if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
             if not game_response or 'result' not in game_response:
                 raise Exception("Invalid do step response from game service")
