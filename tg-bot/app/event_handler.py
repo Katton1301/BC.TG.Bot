@@ -111,11 +111,8 @@ class EventHandler:
             ping_msg = {
                 "command": "server_info",
             }
-            db_response = await self.kafka.request_to_db(ping_msg, timeout=5)
-            # Check if response is valid and successful
-            if db_response is None or "timeout" in db_response and db_response["timeout"]:
-                return False
-            if "result" not in db_response or db_response["result"] != 1:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(ping_msg, timeout=5), "en")
+            if db_response is None:
                 return False
             return True
         except Exception as e:
@@ -136,30 +133,27 @@ class EventHandler:
                     )
             return False
         return True
-    
+
     def _handle_db_server_response(self, response, lang):
         if response is None:
             return [None, Error(ErrorLevel.ERROR, "Database response is none")]
-        
         if "timeout" in response and response["timeout"]:
             msg = phrases.dict("errorTimeout", lang)
             return [None, Error(ErrorLevel.WARNING, msg)]
-        
-        if ("Answer" not in response) or ("Error" not in response) or ("Data" not in response):
+        if ("answer" not in response) or ("error" not in response) or ("data" not in response):
             return [None, Error(ErrorLevel.ERROR, "Wrong database response format")]
-        
-        if response["Answer"] == "OK":
-            return [response["Data"], None]
-        elif response["Answer"] == "Error":
-            return [None, Error(ErrorLevel.ERROR, response["Error"])]
-        elif response["Answer"] == "Warning":
-            return [None, Error(ErrorLevel.WARNING, response["Error"])]
-        elif response["Answer"] == "Critical":
-            return [None, Error(ErrorLevel.CRITICAL, response["Error"])]
-        elif response["Answer"] == "Info":
-            return [None, Error(ErrorLevel.INFO, response["Error"])]
-        else:
-            return [None, Error(ErrorLevel.ERROR, response["Error"])]
+        if response["answer"] == "OK":
+            return [response["data"], None]
+        if response["answer"] == "Error":
+            return [None, Error(ErrorLevel.ERROR, response["error"])]
+        if response["answer"] == "Warning":
+            return [None, Error(ErrorLevel.WARNING, response["error"])]
+        if response["answer"] == "Critical":
+            return [None, Error(ErrorLevel.CRITICAL, response["error"])]
+        if response["answer"] == "Info":
+            return [None, Error(ErrorLevel.INFO, response["error"])]
+
+        return [None, Error(ErrorLevel.ERROR, response["error"])]
 
     async def _handle_server_available(self, user_id):
         if not self.game_server_connected and user_id:
@@ -310,6 +304,7 @@ class EventHandler:
 
     async def _create_game(self, player_id, mode):
         logger.info(f"Starting game creation for user_id: {player_id}")
+        lang = self.langs.get(player_id, "en")
         try:
             create_msg = {
                 "command": "create_game",
@@ -323,12 +318,11 @@ class EventHandler:
                 },
                 "timestamp": str(datetime.now())
             }
-            db_response = await self.kafka.request_to_db(create_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'id' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'id' not in db_response:
                 raise Exception("Invalid response from database: missing game ID")
-
             if 'table' not in db_response or db_response['table'] != 'games':
                 raise Exception("Invalid response from database: wrong table")
 
@@ -366,7 +360,6 @@ class EventHandler:
             return [game_id, None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [None, Error(ErrorLevel.WARNING, msg)]
 
@@ -422,6 +415,7 @@ class EventHandler:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def _add_computer_to_game(self, game_id, player_id, level):
+        lang = self.langs.get(player_id, "en")
         try:
             create_msg = {
                 "command": "create_computer",
@@ -435,12 +429,11 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            db_response = await self.kafka.request_to_db(create_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'id' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
+            if db_response is None:
+                return [False, error]
+            if 'id' not in db_response:
                 raise Exception("Invalid response from database: missing computer ID")
-
             if 'table' not in db_response or db_response['table'] != 'computers':
                 raise Exception("Invalid response from database: wrong table")
 
@@ -465,7 +458,6 @@ class EventHandler:
             return [True, None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [False, Error(ErrorLevel.WARNING, msg)]
 
@@ -521,9 +513,33 @@ class EventHandler:
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
-    async def _give_up_in_game(self, player_id, game_id, force):
+    async def _get_current_players(self, player_id, game_id):
+        lang = self.langs.get(player_id, "en")
         try:
-            lang = self.langs.get(player_id, "en")
+            get_current_players_msg = {
+                "command": "get_current_players",
+                "data": game_id,
+            }
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_current_players_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'players' not in db_response:
+                raise Exception("Invalid get current players response from database")
+
+            return [db_response['players'], None]
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            return [None, Error(ErrorLevel.WARNING, msg)]
+        except Exception as e:
+            msg = f"Failed to get current players in game {game_id}, for user {player_id} error - {e}"
+            return [None, Error(ErrorLevel.ERROR, msg)]
+
+        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+
+    async def _give_up_in_game(self, player_id, game_id, force):
+        lang = self.langs.get(player_id, "en")
+        try:
             game_msg = {
                 "command": 11,  # Assuming 11 is PLAYER_GIVE_UP command
                 "server_id": SERVER_ID,
@@ -586,21 +602,16 @@ class EventHandler:
             logger.info(f"Player {player_id} give up in game {game_id}")
 
             [names, error] = await self._get_game_names(player_id, game_id)
-            if names is None: return [False, error]
+            if names is None:
+                return [False, error]
 
-            get_current_players_msg = {
-                "command": "get_current_players",
-                "data": game_id,
-            }
-            db_response = await self.kafka.request_to_db(get_current_players_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'players' not in db_response:
-                raise Exception("Invalid get current players response from database")
+            [players, error] = await self._get_current_players(player_id, game_id)
+            if players is None:
+                return [False, error]
 
             current_players = []
             player_in_game = False
-            for cur_player in db_response['players']:
+            for cur_player in players:
                 if cur_player['player_id'] == player_id:
                     player_in_game = True
                 name = next((d for d in names if cur_player['player_id'] == d['id']), None)
@@ -699,24 +710,18 @@ class EventHandler:
 
     async def _send_game_results(self, player_id, game_id, lang, names):
         try:
-            get_current_players_msg = {
-                "command": "get_current_players",
-                "data": game_id,
-            }
-            db_response = await self.kafka.request_to_db(get_current_players_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'players' not in db_response:
-                raise Exception("Invalid get current players response from database")
+            [players, error] = await self._get_current_players(player_id, game_id)
+            if players is None:
+                return [False, error]
 
-            current_player_ids = [d['player_id'] for d in db_response['players']]
+            current_player_ids = [d['player_id'] for d in players]
 
             game_msg = {
                 "command": 16,  # Assuming 16 is GAME_RESULT command
                 "server_id": SERVER_ID,
                 "player_id": player_id,
                 "game_id": game_id,
-                }
+            }
             game_response = await self.kafka.request_to_game(game_msg, timeout=5)
             if not await self._verify_game_server_response(game_response, player_id):
                 raise Exception("Server response verification failed")
@@ -844,10 +849,10 @@ class EventHandler:
                     "command": "get_game_report",
                     "data": game_id,
                 }
-            db_response = await self.kafka.request_to_db(get_game_report_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'steps' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_game_report_msg, timeout=5), lang)
+            if db_response is None:
+                return [False, error]
+            if 'steps' not in db_response:
                 raise Exception("Invalid get game report response from database")
 
             game_report = db_response['steps']
@@ -864,7 +869,6 @@ class EventHandler:
             return [True, None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [False, Error(ErrorLevel.WARNING, msg)]
 
@@ -947,21 +951,21 @@ class EventHandler:
 
 
     async def _get_current_game(self, player_id):
+        lang = self.langs.get(player_id, "en")
         try:
             get_current_game_msg = {
                     "command": "get_current_game",
                     "data": player_id,
                 }
-            db_response = await self.kafka.request_to_db(get_current_game_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'id' not in db_response or 'finished' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_current_game_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'id' not in db_response or 'finished' not in db_response:
                 raise Exception("Invalid get current game response from game service")
 
-            return [{"game_id": db_response['id'], "finished": db_response['finished']}, None]
+            return [db_response, None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [None, Error(ErrorLevel.WARNING, msg)]
 
@@ -972,6 +976,7 @@ class EventHandler:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def _get_game_names(self, player_id, game_id):
+        lang = self.langs.get(player_id, "en")
         try:
             create_msg = {
                 "command": "get_game_names",
@@ -979,17 +984,15 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            db_response = await self.kafka.request_to_db(create_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-
-            if not db_response or 'names' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'names' not in db_response:
                 raise Exception("Invalid response from database: wrong names")
 
             return [db_response['names'], None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [None, Error(ErrorLevel.WARNING, msg)]
 
@@ -999,7 +1002,36 @@ class EventHandler:
 
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
+    async def _player_is_lobby_host(self, player_id, lobby_id):
+        lang = self.langs.get(player_id, "en")
+        try:
+            is_host_msg = {
+                "command": "is_lobby_host",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "player_id": player_id
+                },
+                "timestamp": str(datetime.now())
+            }
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(is_host_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'is_host' not in db_response:
+                raise Exception("Invalid response from database: missing is_host field")
+
+            return [db_response['is_host'], None]
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            return [None, Error(ErrorLevel.WARNING, msg)]
+        except Exception as e:
+            msg = f"Failed to get player is host for user {player_id}: {str(e)}"
+            return [None, Error(ErrorLevel.ERROR, msg)]
+
+        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+
     async def _get_lobby_players(self, player_id, lobby_id):
+        lang = self.langs.get(player_id, "en")
         try:
             get_lobby_players_msg = {
                 "command": "get_lobby_players",
@@ -1007,16 +1039,15 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            players_response = await self.kafka.request_to_db(get_lobby_players_msg, timeout=5)
-            if "timeout" in players_response and players_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not players_response or 'players' not in players_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_players_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'players' not in db_response:
                 raise Exception("Invalid response from database: missing players")
 
-            return [players_response['players'], None]
+            return [db_response['players'], None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [None, Error(ErrorLevel.WARNING, msg)]
         except Exception as e:
@@ -1025,7 +1056,69 @@ class EventHandler:
 
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
+    async def _prepare_to_start_lobby(self, player_id, lobby_id):
+        lang = self.langs.get(player_id, "en")
+        try:
+            check_ready_msg = {
+                "command": "prepare_to_start_lobby",
+                "data": {
+                    "lobby_id": lobby_id,
+                    "player_id": player_id,
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            [bd_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(check_ready_msg, timeout=5), lang)
+            if bd_response is None:
+                return [None, error]
+
+            return [True, None]
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            return [None, Error(ErrorLevel.WARNING, msg)]
+        except Exception as e:
+            msg = f"Failed to prepare lobby for {player_id}: {str(e)}"
+            return [None, Error(ErrorLevel.ERROR, msg)]
+
+        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+
+    async def _start_lobby_game(self, player_id, lobby_id, game_id):
+        lang = self.langs.get(player_id, "en")
+        try:
+            start_game_msg = {
+                "command": "start_lobby_game",
+                "data": {
+                    "id": lobby_id,
+                    "game_id": game_id,
+                    "host_id": player_id
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(start_game_msg, timeout=5), lang)
+            if db_response is None:
+                return [False, error]
+            if 'id' not in db_response:
+                raise Exception("Invalid response from database: missing game ID")
+
+            game_id = db_response['id']
+            logger.info(f"Player {player_id} started game {game_id} from lobby {lobby_id}")
+
+            return [True, None]
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            return [False, Error(ErrorLevel.WARNING, msg)]
+
+        except Exception as e:
+            msg = f"Failed to start lobby game for user {player_id}: {str(e)}"
+            return [False, Error(ErrorLevel.ERROR, msg)]
+
+        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+
     async def _get_lobby_names(self, player_id, lobby_id):
+        lang = self.langs.get(player_id, "en")
         try:
             get_lobby_names_msg = {
                 "command": "get_lobby_names",
@@ -1033,16 +1126,15 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            db_response = await self.kafka.request_to_db(get_lobby_names_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'names' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_names_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'names' not in db_response:
                 raise Exception("Invalid response from database: missing names")
 
             return [db_response['names'], None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [None, Error(ErrorLevel.WARNING, msg)]
 
@@ -1238,7 +1330,7 @@ class EventHandler:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
 
-    async def _enter_by_lobby_id(self, player_id, lobby_id):
+    async def _join_lobby(self, player_id, lobby_id, password):
         lang = self.langs.get(player_id, "en")
         try:
             join_data = {
@@ -1246,22 +1338,39 @@ class EventHandler:
                 "data": {
                     "lobby_id": lobby_id,
                     "player_id": player_id,
-                    "password": ""
+                    "password": password
                 },
                 "timestamp": str(datetime.now())
             }
 
-            db_response = await self.kafka.request_to_db(join_data, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'success' not in db_response:
-                raise Exception("Invalid response from database")
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(join_data, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
 
-            if not db_response['success']:
-                error_msg = db_response.get('error', 'errorMessage')
+            return [True, None]
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            return [False, Error(ErrorLevel.WARNING, msg)]
+
+        except Exception as e:
+            msg = f"Failed to join lobby for user {player_id}: {str(e)}"
+            return [False, Error(ErrorLevel.ERROR, msg)]
+
+        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+
+
+    async def _enter_by_lobby_id(self, player_id, lobby_id):
+        lang = self.langs.get(player_id, "en")
+        try:
+            [ok, error] = await self._join_lobby(player_id, lobby_id, "")
+            if not ok:
+                if error.Level() != ErrorLevel.WARNING:
+                    return [False, error]
+                error_msg = error.Message()
 
                 if error_msg == "DBAnswerAlreadyInLobby":
-                    return [False, Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {db_response['id']}")]
+                    return [False, Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {lobby_id}")]
 
                 if error_msg == "DBAnswerPasswordNeeded":
 
@@ -1274,7 +1383,7 @@ class EventHandler:
                         reply_markup=ReplyKeyboardRemove()
                     )
                     return [True, None]
-                
+
                 [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.choose_lobby_type)
                 if not ok: return [ok, error]
 
@@ -1323,14 +1432,17 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            db_response = await self.kafka.request_to_db(get_lobby_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'id' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_msg, timeout=5), lang)
+            if db_response is None:
+                if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerPlayerNotInLobby":
+                    if isNecessary:
+                        raise Exception("Invalid response from database: Player is not in the lobby")
+                    else:
+                        return [0, None]            
+                return [None, error]
+            if 'lobby_id' not in db_response:
                 raise Exception("Invalid response from database: missing lobby ID")
-            if db_response["id"] == 0 and isNecessary:
-                raise Exception("Invalid response from database: Player is not in the lobby")
-            return [db_response['id'], None]
+            return [db_response['lobby_id'], None]
 
         except asyncio.TimeoutError:
             msg = phrases.dict("errorTimeout", lang)
@@ -1338,6 +1450,36 @@ class EventHandler:
 
         except Exception as e:
             msg = f"Failed to get lobby id for {player_id}: {str(e)}"
+            return [None, Error(ErrorLevel.ERROR, msg)]
+
+        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+
+    async def _get_random_lobby_id(self, player_id):
+        lang = self.langs.get(player_id, "en")
+        try:
+            get_random_lobby_msg = {
+                "command": "get_random_lobby_id",
+                "data": {
+                    "server_id": SERVER_ID,
+                    "player_id": player_id,
+                },
+                "timestamp": str(datetime.now())
+            }
+
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_random_lobby_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'lobby_id' not in db_response:
+                raise Exception("Invalid response from database: missing lobby ID")
+
+            return [db_response['lobby_id'], None]
+
+        except asyncio.TimeoutError:
+            msg = phrases.dict("errorTimeout", lang)
+            return [None, Error(ErrorLevel.WARNING, msg)]
+
+        except Exception as e:
+            msg = f"Failed to get random lobby id for {player_id}: {str(e)}"
             return [None, Error(ErrorLevel.ERROR, msg)]
 
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
@@ -1360,10 +1502,10 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            db_response = await self.kafka.request_to_db(lobby_data, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'id' not in db_response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(lobby_data, timeout=5), lang)
+            if db_response is None:
+                return [False, error]
+            if 'id' not in db_response:
                 raise Exception("Invalid response from database: missing lobby ID")
             if 'table' not in db_response or db_response['table'] != 'lobbies':
                 raise Exception("Invalid response from database: wrong table")
@@ -1483,19 +1625,9 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            ban_response = await self.kafka.request_to_db(ban_msg, timeout=5)
-            if "timeout" in ban_response and ban_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not ban_response or 'success' not in ban_response:
-                raise Exception("Invalid response from database: missing success field")
-
-            if not ban_response['success']:
-                error_msg = ban_response.get('error', 'errorMessage')
-                await self.bot.send_message(
-                    chat_id=host_id,
-                    text=phrases.dict(error_msg, lang)
-                )
-                return [False, error_msg]
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(ban_msg, timeout=5), lang)
+            if db_response is None:
+                return [False, error]
 
             banned_player_name = next((n['name'] for n in lobby_names if n['id'] == player_id), "Unknown")
 
@@ -1528,6 +1660,7 @@ class EventHandler:
 
 
     async def _get_blacklist(self, lobby_id, host_id):
+        lang = self.langs.get(host_id, "en")
         try:
             get_msg = {
                 "command": "get_blacklist",
@@ -1538,33 +1671,32 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            response = await self.kafka.request_to_db(get_msg, timeout=5)
-            if "timeout" in response and response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not response or 'blacklist' not in response:
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_msg, timeout=5), lang)
+            if db_response is None:
+                return [None, error]
+            if 'blacklist' not in db_response:
                 raise Exception("Invalid response from database: missing blacklist data")
-            if not response or 'banned_players' not in response:
+            if 'banned_players' not in db_response:
                 raise Exception("Invalid response from database: missing banned_players data")
-            
+
             blacklist = []
-            names = response['banned_players']
-            for player in response['blacklist']:
+            names = db_response['banned_players']
+            for player in db_response['blacklist']:
                 blacklist.append(player)
                 blacklist[-1]['name'] = next((n['name'] for n in names if n['id'] == player['player_id']), "Unknown")
 
             return [blacklist, None]
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(host_id, "en")
             msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
+            return [None, Error(ErrorLevel.WARNING, msg)]
         except Exception as e:
             msg = f"Failed to get blacklist: {str(e)}"
             return [None, Error(ErrorLevel.ERROR, msg)]
 
     async def _unban_player(self, lobby_id, host_id, player_id):
+        lang = self.langs.get(host_id, "en")
         try:
-            lang = self.langs.get(host_id, "en")
             remove_msg = {
                 "command": "unban_player",
                 "data": {
@@ -1575,24 +1707,16 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            response = await self.kafka.request_to_db(remove_msg, timeout=5)
-            if "timeout" in response and response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not response or 'success' not in response:
-                raise Exception("Invalid response from database: missing success field")
-
-            if not response['success']:
-                error_msg = response['error']
-                if error_msg == "DBAnswerOnlyHostCanUnbanPlayer":
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(remove_msg, timeout=5), lang)
+            if db_response is None:
+                if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
                     await self.bot.send_message(
                         chat_id=host_id,
                         text=phrases.dict("youDontHaveSufficientPermissions", lang)
                     )
                     return [True, None]
-                return [False, Error(ErrorLevel.WARNING, error_msg)]
-
+                return [False, error]
             return [True, None]
-
         except asyncio.TimeoutError:
             msg = phrases.dict("errorTimeout", lang)
             return [False, Error(ErrorLevel.WARNING, msg)]
@@ -1630,11 +1754,9 @@ class EventHandler:
                     "command": "get_server_games",
                     "data": SERVER_ID,
                 }
-                db_response = await self.kafka.request_to_db(server_data, timeout=10)
-                if "timeout" in db_response and db_response["timeout"]:
-                    raise asyncio.TimeoutError()
-                if not db_response:
-                    raise Exception("No response from database")
+                [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(server_data, timeout=10), "en")
+                if db_response is None:
+                    raise Exception(error.Message())
 
                 required_fields = ['games', 'players', 'player_games', 'computer_games', 'history']
                 for field in required_fields:
@@ -1904,7 +2026,7 @@ class EventHandler:
             if game_info is None:
                 await self._handle_error(player_id, error)
                 return False
-            game_id = game_info['game_id']
+            game_id = game_info['id']
 
             game_value = int(message.text)
             game_msg = {
@@ -1996,23 +2118,18 @@ class EventHandler:
                 if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
                     unfinished_players += 1
 
-            get_current_players_msg = {
-                "command": "get_current_players",
-                "data": game_id,
-            }
-            db_response = await self.kafka.request_to_db(get_current_players_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'players' not in db_response:
-                raise Exception("Invalid get current players response from database")
+            [players, error] = await self._get_current_players(player_id, game_id)
+            if players is None:
+                await self._handle_error(player_id, error)
+                return False
 
             current_players = []
             player_in_game = False
-            for cur_player in db_response['players']:
-                if cur_player['player_id'] == player_id:
+            for name in names:
+                if name['id'] == player_id:
                     player_in_game = True
-                name = next((d for d in names if cur_player['player_id'] == d['id']), None)
-                if name is not None:
+                is_cur_player = next((True for d in players if d['player_id'] == name['id']), False)
+                if not name['is_player'] or is_cur_player:
                     current_players.append(name)
 
             if player_in_game:
@@ -2020,6 +2137,7 @@ class EventHandler:
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
+                
 
             if unstepped_players > 0:
                 [ok, result] = self._generate_step_result(steps[player_i], lang)
@@ -2202,7 +2320,7 @@ class EventHandler:
         if game_info is None:
             await self._handle_error(player_id, error)
             return False
-        game_id = game_info['game_id']
+        game_id = game_info['id']
 
         [ok, error] = await self._give_up_in_game(player_id, game_id, False)
         if not ok:
@@ -2223,7 +2341,7 @@ class EventHandler:
             if game_info is None:
                 await self._handle_error(player_id, error)
                 return False
-            game_id = game_info['game_id']
+            game_id = game_info['id']
             finished = game_info['finished']
 
             if not finished:
@@ -2278,7 +2396,7 @@ class EventHandler:
             if game_info is None:
                 await self._handle_error(player_id, error)
                 return False
-            game_id = game_info['game_id']
+            game_id = game_info['id']
             finished = game_info['finished']
 
             if not finished and not force:
@@ -2344,27 +2462,16 @@ class EventHandler:
                 )
                 return False
 
-            stay_in_lobby_msg = {
-                "command": "join_lobby",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id,
-                    "password": ""
-                },
-                "timestamp": str(datetime.now())
-            }
+            [ok, error] = await self._join_lobby(player_id, lobby_id, "")
+            if not ok:
+                if error.Level() == ErrorLevel.WARNING:
+                    await self._handle_error(player_id, error)
+                    return False
 
-            db_response = await self.kafka.request_to_db(stay_in_lobby_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'success' not in db_response:
-                raise Exception("Invalid response from database when staying in lobby")
-
-            if not db_response['success']:
-                error_msg = db_response.get('error', 'errorMessage')
+                error_msg = error.Message()
 
                 if error_msg == "DBAnswerAlreadyInLobby":
-                    error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {db_response['id']}")
+                    error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {lobby_id}")
                     await self._handle_error(player_id, error)
                     return False
 
@@ -2556,28 +2663,16 @@ class EventHandler:
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
+            [ok, error] = await self._join_lobby(player_id, lobby_id, password)
+            if not ok:
+                if error.Level() != ErrorLevel.WARNING:
+                    await self._handle_error(player_id, error)
+                    return False
 
-            join_data = {
-                "command": "join_lobby",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id,
-                    "password": password
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            db_response = await self.kafka.request_to_db(join_data, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'success' not in db_response:
-                raise Exception("Invalid response from database")
-
-            if not db_response['success']:
-                error_msg = db_response.get('error', 'errorMessage')
+                error_msg = error.Message()
 
                 if error_msg == "DBAnswerAlreadyInLobby":
-                    error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {db_response['id']}")
+                    error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {lobby_id}")
                     await self._handle_error(player_id, error)
                     return False
 
@@ -2638,22 +2733,10 @@ class EventHandler:
             return False
         lang = self.langs.get(player_id, "en")
         try:
-            get_random_lobby_msg = {
-                "command": "get_random_lobby_id",
-                "data": {
-                    "server_id": SERVER_ID,
-                    "player_id": player_id,
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            db_response = await self.kafka.request_to_db(get_random_lobby_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'id' not in db_response:
-                raise Exception("Invalid response from database: missing lobby ID")
-
-            lobby_id = db_response['id']
+            [lobby_id, error] = await self._get_random_lobby_id(player_id)
+            if lobby_id is None:
+                await self._handle_error(player_id, error)
+                return False
 
             if lobby_id == 0:
                 await message.answer(
@@ -2693,22 +2776,12 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            is_host_msg = {
-                "command": "is_lobby_host",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
+            [is_host, error] = await self._player_is_lobby_host(player_id, lobby_id)
+            if is_host is None:
+                await self._handle_error(player_id, error)
+                return False
 
-            host_response = await self.kafka.request_to_db(is_host_msg, timeout=5)
-            if "timeout" in host_response and host_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not host_response or 'is_host' not in host_response:
-                raise Exception("Invalid response from database: missing is_host field")
-
-            if not host_response['is_host']:
+            if not is_host:
                 await self.bot.send_message(
                     chat_id=player_id,
                     text=phrases.dict("youDontHaveSufficientPermissions", lang)
@@ -2946,35 +3019,16 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            check_ready_msg = {
-                "command": "prepare_to_start_lobby",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id,
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            ready_response = await self.kafka.request_to_db(check_ready_msg, timeout=5)
-            if "timeout" in ready_response and ready_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not ready_response or 'success' not in ready_response:
-                raise Exception("Invalid response from database: missing success field")
-
-            if not ready_response['success']:
-                error_msg = ready_response.get('error', 'errorMessage')
-
-                if error_msg == "DBAnswerOnlyHostCanStartGame":
+            [ok, error] = await self._prepare_to_start_lobby(player_id, lobby_id)
+            if not ok:
+                if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerOnlyHostCanStartGame":
                     await self.bot.send_message(
                         chat_id=player_id,
                         text=phrases.dict("youDontHaveSufficientPermissions", lang)
                     )
                     return False
-
-                await self.bot.send_message(
-                    chat_id=player_id,
-                    text=phrases.dict(error_msg, lang)
-                )
+                else:
+                    await self._handle_error(player_id, error)
                 return False
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
@@ -2991,24 +3045,10 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            start_game_msg = {
-                "command": "start_lobby_game",
-                "data": {
-                    "id": lobby_id,
-                    "game_id": game_id,
-                    "host_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            db_response = await self.kafka.request_to_db(start_game_msg, timeout=5)
-            if "timeout" in db_response and db_response["timeout"]:
-                raise asyncio.TimeoutError()
-            if not db_response or 'id' not in db_response:
-                raise Exception("Invalid response from database: missing game ID")
-
-            game_id = db_response['id']
-            logger.info(f"Player {player_id} started game {game_id} from lobby {lobby_id}")
+            [ok, error] = await self._start_lobby_game(player_id, lobby_id, game_id)
+            if not ok:
+                await self._handle_error(player_id, error)
+                return False
 
             [ok, error] = await self._start_game(game_id, player_id)
             if not ok:

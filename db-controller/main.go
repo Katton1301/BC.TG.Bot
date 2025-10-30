@@ -687,7 +687,7 @@ func handleCreateGame(conn *pgx.Conn, correlation_id string, game GameData) erro
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -822,7 +822,7 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -933,7 +933,7 @@ func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
 
     err := conn.QueryRow(context.Background(),
@@ -976,7 +976,7 @@ func handleGetServerGames(conn *pgx.Conn, correlation_id string, server_id int64
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -1130,7 +1130,7 @@ func handleGetGameNames(conn *pgx.Conn, correlation_id string, gameId int64) err
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
 
     rows, err := conn.Query(context.Background(),
@@ -1204,7 +1204,7 @@ func handleGetGameReport(conn *pgx.Conn, correlation_id string, gameId int64) er
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     rows, err := conn.Query(context.Background(),
         `SELECT game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up, timestamp
@@ -1229,10 +1229,8 @@ func handleGetGameReport(conn *pgx.Conn, correlation_id string, gameId int64) er
     }
 
     data := struct {
-        GameId int64              `json:"game_id"`
         Steps  []GamesHistoryData `json:"steps"`
     }{
-        GameId: gameId,
         Steps:  steps,
     }
 
@@ -1247,7 +1245,7 @@ func handleCreateLobby(conn *pgx.Conn, correlation_id string, lobby LobbyData) e
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -1317,7 +1315,7 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -1623,7 +1621,7 @@ func handleIsLobbyHost(conn *pgx.Conn, correlation_id string, checkData struct {
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
 
     err := conn.QueryRow(context.Background(),
@@ -1657,7 +1655,7 @@ func handleBanPlayer(conn *pgx.Conn, correlation_id string, banData struct {
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -1780,7 +1778,7 @@ func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyDataIn Lob
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -2102,7 +2100,7 @@ func handleGetCurrentPlayers(conn *pgx.Conn, correlation_id string, gameId int64
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     rows, err := conn.Query(context.Background(),
         `SELECT pg.player_id,
@@ -2170,7 +2168,7 @@ func handleGetRandomLobbyId(conn *pgx.Conn, correlation_id string, inputData str
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
 
     rows, err := conn.Query(context.Background(),
@@ -2232,15 +2230,15 @@ func handleGetLobbyId(conn *pgx.Conn, correlation_id string, player_id int64) er
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     err := conn.QueryRow(context.Background(),
         `SELECT lobby_id
          FROM lobby_players
          WHERE player_id = $1`, player_id).Scan(&lobbyId)
     if err != nil {
-        response.Answer = "Error"
-        response.Error = fmt.Sprintf("failed to query lobby id: %v", err)
+        response.Answer = "Warning"
+        response.Error = "DBAnswerPlayerNotInLobby"
         return sendGenericResponse(response)
     }
     data := struct {
@@ -2264,7 +2262,7 @@ func handleGetLobbyPlayers(conn *pgx.Conn, correlation_id string, lobby_id int64
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
 
     rows, err := conn.Query(context.Background(),
@@ -2310,7 +2308,7 @@ func handleGetLobbyNames(conn *pgx.Conn, correlation_id string, lobby_id int64) 
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
 
     rows, err := conn.Query(context.Background(),
@@ -2364,7 +2362,7 @@ func handlePrepareToStartLobby(conn *pgx.Conn, correlation_id string, checkData 
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -2486,7 +2484,7 @@ func handleServerInfo(correlation_id string) error {
         CorrelationId: correlation_id,
         Answer:       "OK",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
 
     return sendGenericResponse(response)
@@ -2502,7 +2500,7 @@ func handleUnbanPlayer(conn *pgx.Conn, correlation_id string, unbanData struct {
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     tx, err := conn.Begin(context.Background())
     if err != nil {
@@ -2579,7 +2577,7 @@ func handleGetBlacklist(conn *pgx.Conn, correlation_id string, inputData struct 
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
-        Data:          nil,
+        Data:          struct{}{},
     }
     var isHost bool
     err := conn.QueryRow(context.Background(),
@@ -2622,14 +2620,14 @@ func handleGetBlacklist(conn *pgx.Conn, correlation_id string, inputData struct 
     for rows.Next() {
         var entry BlacklistData
         var username string
-        if err := rows.Scan(&entry.Id, &entry.LobbyId, &entry.PlayerId, &entry.BannedById, 
+        if err := rows.Scan(&entry.Id, &entry.LobbyId, &entry.PlayerId, &entry.BannedById,
             &entry.Reason, &entry.BannedAt, &username); err != nil {
             response.Answer = "Error"
             response.Error = fmt.Sprintf("failed to scan blacklist entry: %v", err)
             return sendGenericResponse(response)
         }
         blacklist = append(blacklist, entry)
-        
+
         bannedPlayerNames = append(bannedPlayerNames, NameData{
             ID:       entry.PlayerId,
             IsPlayer: true,
@@ -2648,7 +2646,7 @@ func handleGetBlacklist(conn *pgx.Conn, correlation_id string, inputData struct 
 
     response.Answer = "OK"
     response.Data = data
-    log.Printf("Sent blacklist for lobby_id %d: %d entries, %d banned players", 
+    log.Printf("Sent blacklist for lobby_id %d: %d entries, %d banned players",
         inputData.LobbyId, len(blacklist), len(bannedPlayerNames))
     return sendGenericResponse(response)
 }
