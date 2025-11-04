@@ -220,7 +220,7 @@ class EventHandler:
                     text=phrases.dict("errorLobby", lang)
                 )
                 if error.lobby_id != 0:
-                    [ok, inner_error] = await self._leave_lobby(user_id, error.lobby_id, False)
+                    [ok, inner_error] = await self._leave_lobby(user_id, error.lobby_id)
                     if not ok:
                         inner_error = Error(ErrorLevel.CRITICAL, inner_error.Message())
                         inner_error.lobby_id = None
@@ -803,29 +803,30 @@ class EventHandler:
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
-    async def _send_player_leave_lobby(self, leaving_player_id, lobby_id, lobby_players, lobby_names):
+    async def _send_player_leave_lobby(self, leaving_player_id, is_host, lobby_id, lobby_players, lobby_names):
         try:
             leaving_player_name = "Player"
+            new_host_name = "Player"
             if lobby_names:
                 leaving_player_name = next((n['name'] for n in lobby_names if n['id'] == leaving_player_id), "Player")
+            if is_host:
+                for player in lobby_players:
+                    if player['host']:
+                        new_host_name = next((n['name'] for n in lobby_names if n['id'] == player['player_id']), "Player")
+                        break
 
             for player in lobby_players:
-                if player['player_id'] == leaving_player_id:
-                    continue
+                if player['in_lobby'] and player['player_id'] != leaving_player_id:
 
-                player_lang = self.langs.get(player['player_id'], "en")
-
-                leave_msg = f"{leaving_player_name} {phrases.dict('playerLeftLobby', player_lang)}"
-
-                current_player = next((p for p in lobby_players if p['player_id'] == player['player_id']), None)
-                is_host = current_player['host'] if current_player else False
-                is_ready = current_player['is_ready'] if current_player else False
-
-                await self.bot.send_message(
-                    chat_id=player['player_id'],
-                    text=leave_msg,
-                    reply_markup=kb.get_lobby_keyboard(is_host, is_ready, player_lang)
-                )
+                    player_lang = self.langs.get(player['player_id'], "en")
+                    leave_msg = f"{leaving_player_name} {phrases.dict('playerLeftLobby', player_lang)}"
+                    if is_host:
+                        leave_msg += f"\n{phrases.dict('hostLeftLobbyHost', player_lang)}.{phrases.dict('newHost', player_lang)} - {new_host_name}"
+                    await self.bot.send_message(
+                        chat_id=player['player_id'],
+                        text=leave_msg,
+                        reply_markup=kb.get_lobby_keyboard(player['host'], player['is_ready'], player_lang)
+                    )
 
             [ok, error] = await self._send_players_states(leaving_player_id, lobby_id, lobby_players, lobby_names)
             if not ok: return [ok, error]
@@ -855,9 +856,9 @@ class EventHandler:
             if 'steps' not in db_response:
                 raise Exception("Invalid get game report response from database")
 
-            game_report = db_response['steps']
+            game_steps = db_response['steps']
 
-            [ok, report_text] = self._generate_game_report(game_report, lang, names)
+            [ok, report_text] = self._generate_game_report(game_steps, lang, names)
             if not ok:
                 raise Exception(report_text)
 
@@ -1438,7 +1439,7 @@ class EventHandler:
                     if isNecessary:
                         raise Exception("Invalid response from database: Player is not in the lobby")
                     else:
-                        return [0, None]            
+                        return [0, None]
                 return [None, error]
             if 'lobby_id' not in db_response:
                 raise Exception("Invalid response from database: missing lobby ID")
@@ -1567,7 +1568,7 @@ class EventHandler:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
 
-    async def _leave_lobby(self, player_id, lobby_id, notify_other):
+    async def _leave_lobby(self, player_id, lobby_id):
         lang = self.langs.get(player_id, "en")
         try:
             [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
@@ -1583,17 +1584,21 @@ class EventHandler:
                 "timestamp": str(datetime.now())
             }
 
-            await self.kafka.send_to_db(leave_msg)
+            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(leave_msg), lang)
+            if db_response is None:
+                return [None, error]
+            if 'is_host' not in db_response:
+                raise Exception("Invalid response from database: missing is_host field")
+            is_host = db_response['is_host']
             logger.info(f"Player {player_id} left lobby {lobby_id}")
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 raise Exception(error.Message())
 
-            if notify_other:
-                [ok, error] = await self._send_player_leave_lobby(player_id, lobby_id, lobby_players, lobby_names)
-                if not ok:
-                    raise Exception(error.Message())
+            [ok, error] = await self._send_player_leave_lobby(player_id, is_host, lobby_id, lobby_players, lobby_names)
+            if not ok:
+                raise Exception(error.Message())
 
 
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.choose_game)
@@ -2137,7 +2142,7 @@ class EventHandler:
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
-                
+
 
             if unstepped_players > 0:
                 [ok, result] = self._generate_step_result(steps[player_i], lang)
@@ -2344,6 +2349,13 @@ class EventHandler:
             game_id = game_info['id']
             finished = game_info['finished']
 
+            if game_id == 0:
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict("youAreNotInGame", lang)
+                )
+                return False
+
             if not finished:
                 await self.bot.send_message(
                     chat_id=player_id,
@@ -2387,7 +2399,7 @@ class EventHandler:
                 return False
 
             if lobby_id != 0:
-                [ok, error] = await self._leave_lobby(player_id, lobby_id, False)
+                [ok, error] = await self._leave_lobby(player_id, lobby_id)
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
@@ -2399,12 +2411,21 @@ class EventHandler:
             game_id = game_info['id']
             finished = game_info['finished']
 
+
+            if game_id == 0:
+                await self.bot.send_message(
+                    chat_id=player_id,
+                    text=phrases.dict("youAreNotInGame", lang)
+                )
+                return False
+            
             if not finished and not force:
                 await self.bot.send_message(
                     chat_id=player_id,
                     text=phrases.dict("gameNotFinished", lang)
                 )
                 return False
+            
 
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.main_menu_state)
             if not ok:
@@ -2464,22 +2485,12 @@ class EventHandler:
 
             [ok, error] = await self._join_lobby(player_id, lobby_id, "")
             if not ok:
-                if error.Level() == ErrorLevel.WARNING:
-                    await self._handle_error(player_id, error)
-                    return False
-
-                error_msg = error.Message()
-
-                if error_msg == "DBAnswerAlreadyInLobby":
+                if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerAlreadyInLobby":
                     error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {lobby_id}")
                     await self._handle_error(player_id, error)
                     return False
 
-                await self.bot.send_message(
-                    chat_id=player_id,
-                    text=phrases.dict(error_msg, lang),
-                    reply_markup=kb.main[lang]
-                )
+                await self._handle_error(player_id, error)
                 return False
 
             [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
@@ -2674,14 +2685,6 @@ class EventHandler:
                 if error_msg == "DBAnswerAlreadyInLobby":
                     error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {lobby_id}")
                     await self._handle_error(player_id, error)
-                    return False
-
-                if error_msg == "DBAnswerInvalidPassword":
-                    await self.change_player(message, state, PlayerStates.choose_lobby_type)
-                    await message.answer(
-                        phrases.dict("wrongPassword", lang),
-                        reply_markup=kb.lobby_types[lang]
-                    )
                     return False
 
                 await self.change_player(message, state, PlayerStates.choose_lobby_type)
@@ -2995,7 +2998,7 @@ class EventHandler:
         if lobby_id is None:
             await self._handle_error(player_id, error)
             return False
-        [ok, error] = await self._leave_lobby(player_id, lobby_id, True)
+        [ok, error] = await self._leave_lobby(player_id, lobby_id)
         if not ok:
             await self._handle_error(player_id, error)
             return False

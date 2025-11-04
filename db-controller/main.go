@@ -466,7 +466,7 @@ func main() {
                     log.Printf("Failed to parse leave lobby data: %v", err)
                     continue
                 }
-                err = handleLeaveLobby(conn, lobbyPlayerData)
+                err = handleLeaveLobby(conn, kafkaMsg.CorrelationId, lobbyPlayerData)
 
             case "set_player_ready":
                 var lobbyPlayerData LobbyPlayerData
@@ -1522,20 +1522,34 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
     return sendGenericResponse(response)
 }
 
-func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
+func handleLeaveLobby(conn *pgx.Conn, correlation_id string, lobbyPlayerData LobbyPlayerData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
+
     tx, err := conn.Begin(context.Background())
     if err != nil {
-        return fmt.Errorf("failed to begin transaction: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to begin transaction: %v", err)
+        return sendGenericResponse(response)
     }
     defer tx.Rollback(context.Background())
 
     var hostId int64
+    var isHost bool
     err = tx.QueryRow(context.Background(),
         `SELECT host_id FROM lobbies WHERE id = $1`,
         lobbyPlayerData.LobbyId).Scan(&hostId)
 
+    isHost = hostId == lobbyPlayerData.PlayerId
+
     if err != nil {
-        return fmt.Errorf("failed to get lobby info: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to get lobby info: %v", err)
+        return sendGenericResponse(response)
     }
 
     result, err := tx.Exec(context.Background(),
@@ -1543,12 +1557,15 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
         lobbyPlayerData.LobbyId, lobbyPlayerData.PlayerId)
 
     if err != nil {
-        return fmt.Errorf("failed to remove player from lobby: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to remove player from lobby: %v", err)
+        return sendGenericResponse(response)
     }
 
     if result.RowsAffected() == 0 {
-        log.Printf("Player %d not found in lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
-        return nil
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("Player %d not found in lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
+        return sendGenericResponse(response)
     }
 
     var playerCount int
@@ -1557,7 +1574,9 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
         lobbyPlayerData.LobbyId).Scan(&playerCount)
 
     if err != nil {
-        return fmt.Errorf("failed to check player count: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to check player count: %v", err)
+        return sendGenericResponse(response)
     }
 
     if playerCount == 0 {
@@ -1565,11 +1584,13 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
             `DELETE FROM lobbies WHERE id = $1`,
             lobbyPlayerData.LobbyId)
         if err != nil {
-            return fmt.Errorf("failed to delete empty lobby: %w", err)
+            response.Answer = "Error"
+            response.Error = fmt.Sprintf("failed to delete empty lobby: %v", err)
+            return sendGenericResponse(response)
         }
         log.Printf("Deleted empty lobby %d", lobbyPlayerData.LobbyId)
     } else {
-        if hostId == lobbyPlayerData.PlayerId {
+        if isHost {
             var newHostId int64
             err = tx.QueryRow(context.Background(),
                 `SELECT player_id FROM lobby_players
@@ -1582,21 +1603,27 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
                 if err == pgx.ErrNoRows {
                     log.Printf("No other players in lobby %d to assign as host", lobbyPlayerData.LobbyId)
                 } else {
-                    return fmt.Errorf("failed to find new host: %w", err)
+                    response.Answer = "Error"
+                    response.Error = fmt.Sprintf("failed to find new host: %v", err)
+                    return sendGenericResponse(response)
                 }
             } else {
                 _, err = tx.Exec(context.Background(),
                     `UPDATE lobbies SET host_id = $1 WHERE id = $2`,
                     newHostId, lobbyPlayerData.LobbyId)
                 if err != nil {
-                    return fmt.Errorf("failed to update lobby host: %w", err)
+                    response.Answer = "Error"
+                    response.Error = fmt.Sprintf("failed to update lobby host: %v", err)
+                    return sendGenericResponse(response)
                 }
 
                 _, err := tx.Exec(context.Background(),
                     `UPDATE lobby_players SET host = true WHERE lobby_id = $1 AND player_id = $2`,
                 lobbyPlayerData.LobbyId, newHostId)
                 if err != nil {
-                    return fmt.Errorf("failed to update lobby player host: %w", err)
+                    response.Answer = "Error"
+                    response.Error = fmt.Sprintf("failed to update lobby player host: %v", err)
+                    return sendGenericResponse(response)
                 }
                 log.Printf("Transferred host from player %d to player %d in lobby %d",
                     lobbyPlayerData.PlayerId, newHostId, lobbyPlayerData.LobbyId)
@@ -1605,11 +1632,21 @@ func handleLeaveLobby(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
     }
 
     if err := tx.Commit(context.Background()); err != nil {
-        return fmt.Errorf("failed to commit transaction: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to commit transaction: %v", err)
+        return sendGenericResponse(response)
     }
 
+    data := struct {
+        IsHost    bool  `json:"is_host"`
+    }{
+        IsHost:    isHost,
+    }
+
+    response.Answer = "OK"
+    response.Data = data
     log.Printf("Player %d left lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
-    return nil
+    return sendGenericResponse(response)
 }
 
 func handleIsLobbyHost(conn *pgx.Conn, correlation_id string, checkData struct {
