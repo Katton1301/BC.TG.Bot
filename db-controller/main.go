@@ -282,7 +282,7 @@ func main() {
                     log.Printf("Failed to parse player data: %v", err)
                     continue
                 }
-                err = handleInsertPlayer(conn, player)
+                err = handleInsertPlayer(conn, kafkaMsg.CorrelationId, player)
                 if err != nil {
                     log.Printf("Failed to insert player: %v", err)
                 }
@@ -292,7 +292,7 @@ func main() {
                     log.Printf("Failed to parse player data: %v", err)
                     continue
                 }
-                err = handleUpdatePlayer(conn, player)
+                err = handleUpdatePlayer(conn, kafkaMsg.CorrelationId, player)
                 if err != nil {
                     log.Printf("Failed to insert player: %v", err)
                 }
@@ -303,7 +303,7 @@ func main() {
                     log.Printf("Failed to parse player data: %v", err)
                     continue
                 }
-                err = handleUpdateLangPlayer(conn, player)
+                err = handleUpdateLangPlayer(conn, kafkaMsg.CorrelationId, player)
                 if err != nil {
                     log.Printf("Failed to update lang player: %v", err)
                 }
@@ -325,7 +325,7 @@ func main() {
                     log.Printf("Failed to parse game data: %v", err)
                     continue
                 }
-                err = handleUpdateGame(conn, game)
+                err = handleUpdateGame(conn, kafkaMsg.CorrelationId, game)
                 if err != nil {
                     log.Printf("Failed to update game: %v", err)
                 }
@@ -347,7 +347,7 @@ func main() {
                     log.Printf("Failed to parse player game data: %v", err)
                     continue
                 }
-                err = handleAddPlayerGame(conn, playerGame)
+                err = handleAddPlayerGame(conn, kafkaMsg.CorrelationId, playerGame)
                 if err != nil {
                     log.Printf("Failed to add player game: %v", err)
                 }
@@ -358,7 +358,7 @@ func main() {
                     log.Printf("Failed to parse feedback data: %v", err)
                     continue
                 }
-                err = handleFeedback(conn, feedback)
+                err = handleFeedback(conn, kafkaMsg.CorrelationId, feedback)
                 if err != nil {
                     log.Printf("Failed to add feedback: %v", err)
                 }
@@ -380,7 +380,7 @@ func main() {
                     log.Printf("Failed to parse player game data: %v", err)
                     continue
                 }
-                err = handleExitFromGame(conn, playerGame)
+                err = handleExitFromGame(conn, kafkaMsg.CorrelationId, playerGame)
                 if err != nil {
                     log.Printf("Failed to exit from game: %v", err)
                 }
@@ -413,7 +413,7 @@ func main() {
                     log.Printf("Failed to parse game step data: %v", err)
                     continue
                 }
-                err = handleInsertStep(conn, step)
+                err = handleInsertStep(conn, kafkaMsg.CorrelationId, step)
                 if err != nil {
                     log.Printf("Failed to insert step: %v", err)
                 }
@@ -474,7 +474,7 @@ func main() {
                     log.Printf("Failed to parse ready data: %v", err)
                     continue
                 }
-                err = handleSetPlayerReady(conn, lobbyPlayerData)
+                err = handleSetPlayerReady(conn, kafkaMsg.CorrelationId, lobbyPlayerData)
 
             case "start_lobby_game":
                 var lobbyData LobbyData
@@ -590,23 +590,38 @@ func main() {
     }
 }
 
-func handleInsertPlayer(conn *pgx.Conn, player PlayerData) error {
+func handleInsertPlayer(conn *pgx.Conn, correlation_id string, player PlayerData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
+
     _, err := conn.Exec(context.Background(),
         `INSERT INTO players(id, firstname, lastname, fullname, username, lang, state)
-        VALUES($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (id) DO NOTHING`,
+        VALUES($1, $2, $3, $4, $5, $6, $7)`,
         player.ID, player.FirstName, player.LastName, player.FullName,
         player.UserName, player.Lang, player.State)
 
     if err != nil {
-        return fmt.Errorf("failed to insert player: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to insert player: %v", err)
+        return sendGenericResponse(response)
     }
 
     log.Printf("Inserted new player with id %d", player.ID)
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
-func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
+func handleUpdatePlayer(conn *pgx.Conn, correlation_id string, player PlayerData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
     query := "UPDATE players SET"
     args := make([]interface{}, 0)
     argCounter := 1
@@ -640,8 +655,9 @@ func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
     if len(args) > 0 {
         query = query[:len(query)-1]
     } else {
-        log.Printf("No fields to update for player with id %d", player.ID)
-        return nil
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("No fields to update for player with id %v", player.ID)
+        return sendGenericResponse(response)
     }
 
     query += fmt.Sprintf(" WHERE id = $%d", argCounter)
@@ -649,23 +665,29 @@ func handleUpdatePlayer(conn *pgx.Conn, player PlayerData) error {
 
     cmdTag, err := conn.Exec(context.Background(), query, args...)
     if err != nil {
-        return fmt.Errorf("failed to update player: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to update player: %v", err)
+        return sendGenericResponse(response)
     }
 
     if cmdTag.RowsAffected() == 0 {
-        err = handleInsertPlayer(conn, player)
-        if err != nil {
-            return fmt.Errorf("failed to insert new player: %w", err)
-        }
-        log.Printf("Created new player with id %d", player.ID)
+        handleInsertPlayer(conn, correlation_id, player)
     } else {
         log.Printf("Updated player with id %d", player.ID)
+        response.Answer = "OK"
+        return sendGenericResponse(response)
     }
 
     return nil
 }
 
-func handleUpdateLangPlayer(conn *pgx.Conn, player PlayerData) error {
+func handleUpdateLangPlayer(conn *pgx.Conn, correlation_id string, player PlayerData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
     _, err := conn.Exec(context.Background(),
         `UPDATE players SET
             lang = $2
@@ -673,12 +695,14 @@ func handleUpdateLangPlayer(conn *pgx.Conn, player PlayerData) error {
         player.ID, player.Lang)
 
     if err != nil {
-        return fmt.Errorf("failed to update lang player: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to update lang player %v", err)
+        return sendGenericResponse(response)
     }
 
     log.Printf("Updated lang player with id %d", player.ID)
-
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
 func handleCreateGame(conn *pgx.Conn, correlation_id string, game GameData) error {
@@ -736,47 +760,66 @@ func handleCreateGame(conn *pgx.Conn, correlation_id string, game GameData) erro
     return sendGenericResponse(response)
 }
 
-func handleExitFromGame(conn *pgx.Conn, playerGame PlayerGameData) error {
+func handleExitFromGame(conn *pgx.Conn, correlation_id string, playerGame PlayerGameData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
     _, err := conn.Exec(context.Background(),
         `UPDATE player_games
             SET is_current_game = false
             WHERE player_id = $1 AND game_id = $2`,
         playerGame.PlayerId, playerGame.GameId)
     if err != nil {
-        return fmt.Errorf("failed to exit player from game: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to exit player from game: %v", err)
+        return sendGenericResponse(response)
     }
 
     log.Printf("Player %d exited from game %d", playerGame.PlayerId, playerGame.GameId)
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
-func handleUpdateGame(conn *pgx.Conn, game GameData) error {
+func handleUpdateGame(conn *pgx.Conn, correlation_id string, game GameData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
     tx, err := conn.Begin(context.Background())
     if err != nil {
-        return fmt.Errorf("failed to begin transaction: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to begin transaction: %v", err)
+        return sendGenericResponse(response)
     }
-    defer tx.Rollback(context.Background())
 
     if game.SecretValue == 0 {
-    _, err = tx.Exec(context.Background(),
-    `UPDATE games SET
-    server_id = $2,
-    stage = $3,
-    step = $4
-    WHERE id = $1`,
-    game.ID, game.ServerId, game.Stage, game.Step)
+        _, err = tx.Exec(context.Background(),
+            `UPDATE games SET
+            server_id = $2,
+            stage = $3,
+            step = $4
+            WHERE id = $1`,
+            game.ID, game.ServerId, game.Stage, game.Step)
     } else {
-    _, err = tx.Exec(context.Background(),
-    `UPDATE games SET
-    server_id = $2,
-    stage = $3,
-    step = $4,
-    secret_value = $5
-    WHERE id = $1`,
-    game.ID, game.ServerId, game.Stage, game.Step, game.SecretValue)
+        _, err = tx.Exec(context.Background(),
+            `UPDATE games SET
+            server_id = $2,
+            stage = $3,
+            step = $4,
+            secret_value = $5
+            WHERE id = $1`,
+            game.ID, game.ServerId, game.Stage, game.Step, game.SecretValue)
     }
     if err != nil {
-    return fmt.Errorf("failed to update game: %w", err)
+        tx.Rollback(context.Background())
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to update game: %v", err)
+        return sendGenericResponse(response)
     }
 
     if game.Stage == "FINISHED" {
@@ -785,15 +828,21 @@ func handleUpdateGame(conn *pgx.Conn, game GameData) error {
             `SELECT mode FROM games WHERE id = $1`,
             game.ID).Scan(&gameMode)
         if err != nil {
-            return fmt.Errorf("failed to query game mode: %w", err)
+            tx.Rollback(context.Background())
+            response.Answer = "Error"
+            response.Error = fmt.Sprintf("failed to query game mode: %v", err)
+            return sendGenericResponse(response)
         }
 
         if gameMode == "lobby" {
             _, err = tx.Exec(context.Background(),
-            `UPDATE lobbies SET status = 'FINISHED' WHERE game_id = $1`,
-            game.ID)
+                `UPDATE lobbies SET status = 'FINISHED' WHERE game_id = $1`,
+                game.ID)
             if err != nil {
-            return fmt.Errorf("failed to update lobby status: %w", err)
+                tx.Rollback(context.Background())
+                response.Answer = "Error"
+                response.Error = fmt.Sprintf("failed to update lobby status: %v", err)
+                return sendGenericResponse(response)
             }
             log.Printf("Updated lobby status to FINISHED for game %d", game.ID)
 
@@ -802,18 +851,24 @@ func handleUpdateGame(conn *pgx.Conn, game GameData) error {
                 WHERE lobby_id = (SELECT id FROM lobbies WHERE game_id = $1)`,
             game.ID)
             if err != nil {
-            return fmt.Errorf("failed to reset player ready states and in_lobby: %w", err)
+                tx.Rollback(context.Background())
+                response.Answer = "Error"
+                response.Error = fmt.Sprintf("failed to reset player ready states and in_lobby: %v", err)
+                return sendGenericResponse(response)
             }
             log.Printf("Reset all player ready states to false and in_lobby to false for lobby with game %d", game.ID)
         }
     }
 
     if err := tx.Commit(context.Background()); err != nil {
-        return fmt.Errorf("failed to commit transaction: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to commit transaction: %v", err)
+        return sendGenericResponse(response)
     }
 
     log.Printf("Updated game with id %d", game.ID)
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
 func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer ComputerGameData) error {
@@ -879,12 +934,20 @@ func handleCreateComputer(conn *pgx.Conn, correlation_id string, computer Comput
     return sendGenericResponse(response)
 }
 
-func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
+func handleAddPlayerGame(conn *pgx.Conn, correlation_id string, playerGame PlayerGameData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
     tx, err := conn.Begin(context.Background())
     if err != nil {
-        return fmt.Errorf("failed to begin transaction: %w", err)
+        tx.Rollback(context.Background())
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to begin transaction: %v", err)
+        return sendGenericResponse(response)
     }
-    defer tx.Rollback(context.Background())
 
     _, err = tx.Exec(context.Background(),
         `UPDATE player_games
@@ -892,7 +955,10 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
             WHERE player_id = $1`,
         playerGame.PlayerId)
     if err != nil {
-        return fmt.Errorf("failed to reset current games: %w", err)
+        tx.Rollback(context.Background())
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to reset current games: %v", err)
+        return sendGenericResponse(response)
     }
 
     _, err = tx.Exec(context.Background(),
@@ -901,28 +967,44 @@ func handleAddPlayerGame(conn *pgx.Conn, playerGame PlayerGameData) error {
     playerGame.PlayerId, playerGame.ServerId, playerGame.GameId, playerGame.IsCurrentGame, playerGame.IsHost)
 
     if err != nil {
-    return fmt.Errorf("failed to insert player game: %w", err)
+        tx.Rollback(context.Background())
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to insert player game: %v", err)
+        return sendGenericResponse(response)
     }
 
     if err := tx.Commit(context.Background()); err != nil {
-        return fmt.Errorf("failed to commit transaction: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to commit transaction: %v", err)
+        return sendGenericResponse(response)
     }
+
     log.Printf("Inserted player game")
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
-func handleFeedback(conn *pgx.Conn, feedback FeedBackData) error {
+func handleFeedback(conn *pgx.Conn, correlation_id string, feedback FeedBackData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
     _, err := conn.Exec(context.Background(),
-    `INSERT INTO feedback(username, message)
-    VALUES($1, $2)`,
-    feedback.UserName, feedback.Message)
+        `INSERT INTO feedback(username, message)
+        VALUES($1, $2)`,
+        feedback.UserName, feedback.Message)
 
     if err != nil {
-    return fmt.Errorf("failed to add feedback: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to add feedback: %v", err)
+        return sendGenericResponse(response)
     }
 
     log.Printf("Added feedback")
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
 func handleGetCurrentGame(conn *pgx.Conn, correlation_id string, player_id int64) error {
@@ -1791,23 +1873,34 @@ func handleBanPlayer(conn *pgx.Conn, correlation_id string, banData struct {
     return sendGenericResponse(response)
 }
 
-func handleSetPlayerReady(conn *pgx.Conn, lobbyPlayerData LobbyPlayerData) error {
+func handleSetPlayerReady(conn *pgx.Conn, correlation_id string, lobbyPlayerData LobbyPlayerData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
     result, err := conn.Exec(context.Background(),
         `UPDATE lobby_players SET is_ready = $1
          WHERE lobby_id = $2 AND player_id = $3`,
         lobbyPlayerData.IsReady, lobbyPlayerData.LobbyId, lobbyPlayerData.PlayerId)
 
     if err != nil {
-        return fmt.Errorf("failed to update player readiness: %w", err)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to update player readiness: %v", err)
+        return sendGenericResponse(response)
     }
 
     if result.RowsAffected() == 0 {
-        return fmt.Errorf("player %d not found in lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("player %d not found in lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
+        return sendGenericResponse(response)
     }
 
     log.Printf("Player %d readiness set to %t in lobby %d",
         lobbyPlayerData.PlayerId, lobbyPlayerData.IsReady, lobbyPlayerData.LobbyId)
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
 func handleStartLobbyGame(conn *pgx.Conn, correlation_id string, lobbyDataIn LobbyData) error {
@@ -2183,18 +2276,27 @@ func handleGetCurrentPlayers(conn *pgx.Conn, correlation_id string, gameId int64
     return sendGenericResponse(response)
 }
 
-func handleInsertStep(conn *pgx.Conn, step GamesHistoryData) error {
-  _, err := conn.Exec(context.Background(),
-   `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up, timestamp)
-   VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-   step.GameId, step.PlayerId, step.ServerId, step.Step, step.GameValue, step.Bulls, step.Cows, step.IsComputer, step.IsGiveUp, step.Timestamp)
+func handleInsertStep(conn *pgx.Conn, correlation_id string, step GamesHistoryData) error {
+    response := GenericResponse{
+        CorrelationId: correlation_id,
+        Answer:       "Unknown",
+        Error:         "",
+        Data:          struct{}{},
+    }
+    _, err := conn.Exec(context.Background(),
+        `INSERT INTO games_history(game_id, player_id, server_id, step, game_value, bulls, cows, is_computer, is_give_up, timestamp)
+        VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        step.GameId, step.PlayerId, step.ServerId, step.Step, step.GameValue, step.Bulls, step.Cows, step.IsComputer, step.IsGiveUp, step.Timestamp)
 
-   if err != nil {
-     return fmt.Errorf("failed to insert step: %w", err)
-   }
+    if err != nil {
+        response.Answer = "Error"
+        response.Error = fmt.Sprintf("failed to insert step: %v", err)
+        return sendGenericResponse(response)
+    }
 
     log.Printf("Inserted step with game id %d at %v", step.GameId, step.Timestamp)
-    return nil
+    response.Answer = "OK"
+    return sendGenericResponse(response)
 }
 
 func handleGetRandomLobbyId(conn *pgx.Conn, correlation_id string, inputData struct {
