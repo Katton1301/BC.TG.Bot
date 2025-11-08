@@ -276,6 +276,12 @@ func main() {
         }
 
         switch kafkaMsg.Command {
+            case "ping":
+                err = handlePing(kafkaMsg.CorrelationId)
+                if err != nil {
+                    log.Printf("Failed to handle server info request: %v", err)
+                }
+
             case "insert_player":
                 var player PlayerData
                 if err := json.Unmarshal(kafkaMsg.Data, &player); err != nil {
@@ -530,7 +536,7 @@ func main() {
                 }
                 err = handlePrepareToStartLobby(conn, kafkaMsg.CorrelationId, checkData)
 
-            case "is_lobby_host":
+            case "player_is_lobby_host":
                 var checkData struct {
                     LobbyId   int64  `json:"lobby_id"`
                     PlayerId  int64  `json:"player_id"`
@@ -539,7 +545,7 @@ func main() {
                     log.Printf("Failed to parse lobby id: %v", err)
                     continue
                 }
-                err = handleIsLobbyHost(conn, kafkaMsg.CorrelationId, checkData)
+                err = handlePlayerIsLobbyHost(conn, kafkaMsg.CorrelationId, checkData)
 
             case "ban_player":
                 var banData struct {
@@ -575,12 +581,6 @@ func main() {
                     continue
                 }
                 err = handleGetBlacklist(conn, kafkaMsg.CorrelationId, inputData)
-
-            case "server_info":
-                err = handleServerInfo(kafkaMsg.CorrelationId)
-                if err != nil {
-                    log.Printf("Failed to handle server info request: %v", err)
-                }
 
   // another commands
 
@@ -1731,7 +1731,7 @@ func handleLeaveLobby(conn *pgx.Conn, correlation_id string, lobbyPlayerData Lob
     return sendGenericResponse(response)
 }
 
-func handleIsLobbyHost(conn *pgx.Conn, correlation_id string, checkData struct {
+func handlePlayerIsLobbyHost(conn *pgx.Conn, correlation_id string, checkData struct {
     LobbyId   int64  `json:"lobby_id"`
     PlayerId  int64  `json:"player_id"`
 }) error {
@@ -2618,7 +2618,7 @@ func handlePrepareToStartLobby(conn *pgx.Conn, correlation_id string, checkData 
     return sendGenericResponse(response)
 }
 
-func handleServerInfo(correlation_id string) error {
+func handlePing(correlation_id string) error {
     response := GenericResponse{
         CorrelationId: correlation_id,
         Answer:       "OK",

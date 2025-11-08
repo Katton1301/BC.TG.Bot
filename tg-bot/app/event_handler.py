@@ -4,6 +4,7 @@ import os
 from typing import Any
 from aiogram import types
 from kafka_handler import KafkaHandler
+from database_communicator import DBCommunicator
 from phrases import phrases
 import keyboards as kb
 from aiogram.fsm.state import State
@@ -30,7 +31,6 @@ class EventHandler:
         self.dp: Dispatcher = dp
         self.running = False
         self.game_server_connected = False
-        self.db_server_connected = False
         kafka_bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
         kafka_config = {
             "db_listen_topic": os.environ['TOPIC_DB_LISTEN'],
@@ -44,14 +44,17 @@ class EventHandler:
         kb.create_keyboards()
 
         self.kafka = KafkaHandler(kafka_bootstrap_servers, kafka_config)
+        self.db_communicator = DBCommunicator(self.kafka, self.langs, SERVER_ID)
 
     async def start(self):
         await self.kafka.start()
+        await self.db_communicator.start()
         self.running = True
         self.server_check_task = asyncio.create_task(self._check_server_availability())
 
     async def stop(self):
         await self.kafka.stop()
+        await self.db_communicator.stop()
         self.running = False
         if self.server_check_task:
             self.server_check_task.cancel()
@@ -65,24 +68,19 @@ class EventHandler:
     async def _check_server_availability(self):
         while self.running:
             try:
-                self.db_server_connected = await self._ping_db_controller()
-                if self.db_server_connected:
-                    logger.info("Ping database controller successfully")
-                    if self.game_server_connected:
-                        if not await self._ping_game_server():
-                            self.game_server_connected = False
-                            logger.error("Game server disconnected")
-                        else:
-                            logger.info("Ping game server successfully")
+                if self.game_server_connected:
+                    if not await self._ping_game_server():
+                        self.game_server_connected = False
+                        logger.error("Game server disconnected")
                     else:
-                        logger.info("Attempting to reconnect to game server...")
-                        if await self.initGameServer():
-                            self.game_server_connected = True
-                            logger.info("Game server reconnected successfully")
-                        else:
-                            logger.warning("Failed to reconnect to game server")
+                        logger.info("Ping game server successfully")
                 else:
-                    logger.error("Database controller disconnected")
+                    logger.info("Attempting to reconnect to game server...")
+                    if await self.initGameServer():
+                        self.game_server_connected = True
+                        logger.info("Game server reconnected successfully")
+                    else:
+                        logger.warning("Failed to reconnect to game server")
 
                 await asyncio.sleep(60)
             except Exception as e:
@@ -106,20 +104,6 @@ class EventHandler:
             logger.error(msg)
             return False
 
-    async def _ping_db_controller(self):
-        try:
-            ping_msg = {
-                "command": "server_info",
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(ping_msg, timeout=5), "en")
-            if db_response is None:
-                return False
-            return True
-        except Exception as e:
-            msg = f"Failed to ping db controller: {str(e)}"
-            logger.error(msg)
-            return False
-
     async def _verify_game_server_response(self, response, user_id=None):
         if response is None or "timeout" in response and response["timeout"]:
             if self.game_server_connected:
@@ -134,29 +118,16 @@ class EventHandler:
             return False
         return True
 
-    def _handle_db_server_response(self, response, lang):
-        if response is None:
-            return [None, Error(ErrorLevel.ERROR, "Database response is none")]
-        if "timeout" in response and response["timeout"]:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-        if ("answer" not in response) or ("error" not in response) or ("data" not in response):
-            return [None, Error(ErrorLevel.ERROR, "Wrong database response format")]
-        if response["answer"] == "OK":
-            return [response["data"], None]
-        if response["answer"] == "Error":
-            return [None, Error(ErrorLevel.ERROR, response["error"])]
-        if response["answer"] == "Warning":
-            return [None, Error(ErrorLevel.WARNING, response["error"])]
-        if response["answer"] == "Critical":
-            return [None, Error(ErrorLevel.CRITICAL, response["error"])]
-        if response["answer"] == "Info":
-            return [None, Error(ErrorLevel.INFO, response["error"])]
-
-        return [None, Error(ErrorLevel.ERROR, response["error"])]
-
     async def _handle_server_available(self, user_id):
-        if not self.game_server_connected and user_id:
+        if not self.db_communicator.online():
+            lang = self.langs.get(user_id, "en")
+            await self.bot.send_message(
+                chat_id=user_id,
+                text=phrases.dict("dbServerUnavailableTryLater", lang),
+                reply_markup=kb.main[lang]
+            )
+            return False
+        if not self.game_server_connected:
             lang = self.langs.get(user_id, "en")
             await self.bot.send_message(
                 chat_id=user_id,
@@ -164,9 +135,7 @@ class EventHandler:
                 reply_markup=kb.main[lang]
             )
             return False
-
         return True
-
 
     async def _handle_error(self, user_id: int, error: Error):
         try:
@@ -247,52 +216,6 @@ class EventHandler:
         if error.Level() == ErrorLevel.CRITICAL:
             sys.exit(1)
 
-    async def _insert_player(self, player: Any):
-        lang = self.langs.get(player['player_id'], "en")
-        player_data = {
-            "command": "insert_player",
-            "data": player,
-            "timestamp": str(datetime.now())
-        }
-        try:
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(player_data, timeout=5), lang)
-            if db_response is None: return [False, error]
-            logger.info(f"Successfully sent player insert for user_id: {player['player_id']}")
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to send player data to Kafka: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _update_player(self, player: Any):
-        try:
-            lang = self.langs.get(player['player_id'], "en")
-            player_data = {
-                "command": "change_player",
-                "data": player,
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(player_data, timeout=5), lang)
-            if db_response is None: return [False, error]
-            logger.info(f"Successfully sent player update for user_id: {player['player_id']}")
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to send player data to Kafka: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-
     async def _change_player_state_by_id(self, player_id, player_state : PlayerStates):
         storage_key = StorageKey(chat_id=player_id, user_id=player_id, bot_id=self.bot.id)
         state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
@@ -301,65 +224,17 @@ class EventHandler:
             "player_id": player_id,
             "state": await state.get_state()
         }
-        return await self._update_player(player)
-
-    async def _add_player_game(self, user_id, player_id, game_id, is_host):
-        lang = self.langs.get(user_id, "en")
-        try:
-            add_player_msg = {
-                "command": "add_player_game",
-                "data": {
-                    "player_id": player_id,
-                    "server_id": SERVER_ID,
-                    "game_id": game_id,
-                    "is_current_game": True,
-                    "is_host": is_host,
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(add_player_msg, timeout=5), lang)
-            if db_response is None: return [False, error]
-            logger.info(f"Player {player_id} added to game {game_id}")
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to add player to game in db for user {user_id} with error: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+        return await self.db_communicator.change_player(player)
 
     async def _create_game(self, player_id, mode):
         lang = self.langs.get(player_id, "en")
         try:
             logger.info(f"Starting game creation for user_id: {player_id}")
-            create_msg = {
-                "command": "create_game",
-                "data": {
-                    "id": 0,
-                    "server_id": SERVER_ID,
-                    "stage": "WAIT_A_NUMBER",
-                    "step": 0,
-                    "secret_value": 0,
-                    "mode": mode,
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
-            if db_response is None:
+            [game_id, error] = await self.db_communicator.create_game(player_id, mode)
+            if game_id is None:
                 return [None, error]
-            if 'id' not in db_response:
-                raise Exception("Invalid response from database: missing game ID")
-            if 'table' not in db_response or db_response['table'] != 'games':
-                raise Exception("Invalid response from database: wrong table")
 
-            game_id = db_response['id']
-            logger.info(f"Game created with ID: {game_id}")
-
-            [ok, error] = await self._add_player_game(player_id, player_id, game_id, True)
+            [ok, error] = await self.db_communicator.add_player_game(player_id, player_id, game_id, True)
             if not ok:
                 return [None, error]
 
@@ -391,7 +266,7 @@ class EventHandler:
 
     async def _add_player_to_game(self, game_id, player_id):
         try:
-            [ok, error] = await self._add_player_game(player_id, player_id, game_id, False)
+            [ok, error] = await self.db_communicator.add_player_game(player_id, player_id, game_id, False)
             if not ok: return [False, error]
 
             game_msg = {
@@ -425,27 +300,9 @@ class EventHandler:
     async def _add_computer_to_game(self, game_id, player_id, level):
         lang = self.langs.get(player_id, "en")
         try:
-            create_msg = {
-                "command": "create_computer",
-                "data": {
-                    "computer_id": 0,
-                    "player_id": player_id,
-                    "server_id": SERVER_ID,
-                    "game_id": game_id,
-                    "game_brain": level,
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
-            if db_response is None:
+            [computer_id, error] = await self.db_communicator.create_computer(player_id, game_id, level)
+            if computer_id is None:
                 return [False, error]
-            if 'id' not in db_response:
-                raise Exception("Invalid response from database: missing computer ID")
-            if 'table' not in db_response or db_response['table'] != 'computers':
-                raise Exception("Invalid response from database: wrong table")
-
-            computer_id = db_response['id']
 
             game_msg = {
                 "command": 6,  # Assuming 6 is ADD_COMPUTER command
@@ -475,39 +332,6 @@ class EventHandler:
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
-    async def _update_game(self, game_id, player_id, game_stage, step, secret_value):
-        lang = self.langs.get(player_id, "en")
-        try:
-            start_game_message = {
-                "command": "update_game",
-                "data": {
-                    "id": game_id,
-                    "server_id": SERVER_ID,
-                    "stage": game_stage,
-                    "step": step,
-                    "secret_value": secret_value,
-                    "mode": "unchangeable",
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(start_game_message, timeout=5), lang)
-            if db_response is None:
-                return [False, error]
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to update game for user {player_id} with error: {e}"
-            error = Error(ErrorLevel.GAME_ERROR, msg)
-            error.setGameId(game_id)
-            return [False, error]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
     async def _start_game(self, game_id, player_id):
         try:
             game_msg = {
@@ -524,7 +348,7 @@ class EventHandler:
             if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
                 raise Exception(f"Game service error: {game_response['result']}")
 
-            [ok, error] = await self._update_game(game_id, player_id, game_response["game_stage"], 0, game_response["secret_value"])
+            [ok, error] = await self.db_communicator.update_game(game_id, player_id, game_response["game_stage"], 0, game_response["secret_value"])
             if not ok: return [False, error]
 
             logger.info(f"Game {game_id} fully initialized")
@@ -543,65 +367,6 @@ class EventHandler:
             return [False, error]
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _get_current_players(self, player_id, game_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            get_current_players_msg = {
-                "command": "get_current_players",
-                "data": game_id,
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_current_players_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'players' not in db_response:
-                raise Exception("Invalid get current players response from database")
-
-            return [db_response['players'], None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to get current players in game {game_id}, for user {player_id} error - {e}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-    
-    async def _add_step(self, player_id, game_id, step, game_value, bulls, cows, is_computer, is_give_up):
-        lang = self.langs.get(player_id, "en")
-        try:
-            step_message = {
-                "command": "add_step",
-                "data": {
-                    "game_id": game_id,
-                    "player_id": player_id,
-                    "server_id": SERVER_ID,
-                    "step": step,
-                    "game_value": game_value,
-                    "bulls": bulls,
-                    "cows": cows,
-                    "is_computer": is_computer,
-                    "is_give_up": is_give_up,
-                    "timestamp": datetime.now().isoformat(),
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(step_message, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to add step in game {game_id}, for user {player_id} error - {e}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
 
     async def _give_up_in_game(self, player_id, game_id, force):
         lang = self.langs.get(player_id, "en")
@@ -633,19 +398,19 @@ class EventHandler:
             if player_i == -1:
                 raise Exception(f"Game service not have this player steps")
 
-            [ok, error] = await self._add_step(player_id, game_id, 0, 0, 0, 0, False, True)
+            [ok, error] = await self.db_communicator.add_step(player_id, game_id, 0, 0, 0, 0, False, True)
             if not ok: return [False, error]
 
             if game_response["game_stage"] != "IN_PROGRESS":
-                [ok, error] = await self._update_game(game_id, player_id, game_response["game_stage"], steps[player_i]["step"], 0)
+                [ok, error] = await self.db_communicator.update_game(game_id, player_id, game_response["game_stage"], steps[player_i]["step"], 0)
                 if not ok: return [False, error]
             logger.info(f"Player {player_id} give up in game {game_id}")
 
-            [names, error] = await self._get_game_names(player_id, game_id)
+            [names, error] = await self.db_communicator.get_game_names(player_id, game_id)
             if names is None:
                 return [False, error]
 
-            [players, error] = await self._get_current_players(player_id, game_id)
+            [players, error] = await self.db_communicator.get_current_players(player_id, game_id)
             if players is None:
                 return [False, error]
 
@@ -719,7 +484,7 @@ class EventHandler:
                 if not ok: return [ok, error]
 
                 max_step = max(step['step'] for step in steps)
-                [ok, error] = await self._update_game(game_id, player_id, game_response["game_stage"], max_step, 0)
+                [ok, error] = await self.db_communicator.update_game(game_id, player_id, game_response["game_stage"], max_step, 0)
                 if not ok: return [False, error]
 
                 logger.info(f"Game {game_id} force finish")
@@ -740,7 +505,7 @@ class EventHandler:
 
     async def _send_game_results(self, player_id, game_id, lang, names):
         try:
-            [players, error] = await self._get_current_players(player_id, game_id)
+            [players, error] = await self.db_communicator.get_current_players(player_id, game_id)
             if players is None:
                 return [False, error]
 
@@ -765,7 +530,7 @@ class EventHandler:
             if player_i == -1:
                 raise Exception(f"Game service not have this player for game result")
 
-            [lobby_id, error] = await self._get_lobby_id(player_id, False)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, False)
             if lobby_id is None: return [False, error]
             for i in range(len(game_result)):
                 if game_result[i]['player'] and game_result[i]['id'] in current_player_ids:
@@ -874,44 +639,6 @@ class EventHandler:
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
-    async def _send_game_report(self, player_id, game_id, lang, names):
-        try:
-            get_game_report_msg = {
-                    "command": "get_game_report",
-                    "data": game_id,
-                }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_game_report_msg, timeout=5), lang)
-            if db_response is None:
-                return [False, error]
-            if 'steps' not in db_response:
-                raise Exception("Invalid get game report response from database")
-
-            game_steps = db_response['steps']
-
-            [ok, report_text] = self._generate_game_report(game_steps, lang, names)
-            if not ok:
-                raise Exception(report_text)
-
-            await self.bot.send_message(
-                chat_id=player_id,
-                text=report_text
-            )
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = str(e)
-            error = Error(ErrorLevel.GAME_ERROR, msg)
-            error.setGameId(game_id)
-            return [False, error]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-
     async def _remove_waiting_player_after_timeout(self, player_id: int, lang: str):
         await asyncio.sleep(60)
 
@@ -979,202 +706,6 @@ class EventHandler:
         except Exception as e:
             msg = f"Failed to generate step results: {e}"
             return [False, msg]
-
-
-    async def _get_current_game(self, player_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            get_current_game_msg = {
-                    "command": "get_current_game",
-                    "data": player_id,
-                }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_current_game_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'id' not in db_response or 'finished' not in db_response:
-                raise Exception("Invalid get current game response from game service")
-
-            return [db_response, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to get current game for user {player_id}: {str(e)}"
-            return [0, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _get_game_names(self, player_id, game_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            create_msg = {
-                "command": "get_game_names",
-                "data": game_id,
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'names' not in db_response:
-                raise Exception("Invalid response from database: wrong names")
-
-            return [db_response['names'], None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to get game names: {e}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _player_is_lobby_host(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            is_host_msg = {
-                "command": "is_lobby_host",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(is_host_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'is_host' not in db_response:
-                raise Exception("Invalid response from database: missing is_host field")
-
-            return [db_response['is_host'], None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to get player is host for user {player_id}: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _get_lobby_players(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            get_lobby_players_msg = {
-                "command": "get_lobby_players",
-                "data": lobby_id,
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_players_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'players' not in db_response:
-                raise Exception("Invalid response from database: missing players")
-
-            return [db_response['players'], None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to get lobby players for user {player_id}: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _prepare_to_start_lobby(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            check_ready_msg = {
-                "command": "prepare_to_start_lobby",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id,
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [bd_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(check_ready_msg, timeout=5), lang)
-            if bd_response is None:
-                return [None, error]
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to prepare lobby for {player_id}: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _start_lobby_game(self, player_id, lobby_id, game_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            start_game_msg = {
-                "command": "start_lobby_game",
-                "data": {
-                    "id": lobby_id,
-                    "game_id": game_id,
-                    "host_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(start_game_msg, timeout=5), lang)
-            if db_response is None:
-                return [False, error]
-            if 'id' not in db_response:
-                raise Exception("Invalid response from database: missing game ID")
-
-            game_id = db_response['id']
-            logger.info(f"Player {player_id} started game {game_id} from lobby {lobby_id}")
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to start lobby game for user {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _get_lobby_names(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            get_lobby_names_msg = {
-                "command": "get_lobby_names",
-                "data": lobby_id,
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_names_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'names' not in db_response:
-                raise Exception("Invalid response from database: missing names")
-
-            return [db_response['names'], None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to get lobby names for user {player_id}: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
 
     def _generate_steps_result(self, steps, player_i, lang, names, step_number):
         try:
@@ -1328,14 +859,14 @@ class EventHandler:
             for i in range(len(steps)):
                 if steps[i]["player"]:
                     continue
-                [ok, error] = await self._add_step(
-                    steps[i]["id"], 
-                    game_id, 
-                    steps[i]["step"], 
-                    steps[i]["game_value"], 
-                    steps[i]["bulls"], 
-                    steps[i]["cows"], 
-                    not steps[i]["player"], 
+                [ok, error] = await self.db_communicator.add_step(
+                    steps[i]["id"],
+                    game_id,
+                    steps[i]["step"],
+                    steps[i]["game_value"],
+                    steps[i]["bulls"],
+                    steps[i]["cows"],
+                    not steps[i]["player"],
                     False
                     )
                 if not ok: return [False, error]
@@ -1354,41 +885,10 @@ class EventHandler:
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
-
-    async def _join_lobby(self, player_id, lobby_id, password):
-        lang = self.langs.get(player_id, "en")
-        try:
-            join_data = {
-                "command": "join_lobby",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id,
-                    "password": password
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(join_data, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to join lobby for user {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-
     async def _enter_by_lobby_id(self, player_id, lobby_id):
         lang = self.langs.get(player_id, "en")
         try:
-            [ok, error] = await self._join_lobby(player_id, lobby_id, "")
+            [ok, error] = await self.db_communicator.join_lobby(player_id, lobby_id, "")
             if not ok:
                 if error.Level() != ErrorLevel.WARNING:
                     return [False, error]
@@ -1427,10 +927,10 @@ class EventHandler:
                 reply_markup=kb.get_lobby_keyboard(False, False, lang)
             )
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None: return [False, error]
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
             if lobby_names is None: return [False, error]
 
             [ok, error] = await self._send_players_states(player_id, lobby_id, lobby_players, lobby_names)
@@ -1447,122 +947,6 @@ class EventHandler:
             return [False, Error(ErrorLevel.ERROR, msg)]
 
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _get_lobby_id(self, player_id, isNecessary):
-        lang = self.langs.get(player_id, "en")
-        try:
-            get_lobby_msg = {
-                "command": "get_lobby_id",
-                "data": player_id,
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_msg, timeout=5), lang)
-            if db_response is None:
-                if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerPlayerNotInLobby":
-                    if isNecessary:
-                        raise Exception("Invalid response from database: Player is not in the lobby")
-                    else:
-                        return [0, None]
-                return [None, error]
-            if 'lobby_id' not in db_response:
-                raise Exception("Invalid response from database: missing lobby ID")
-            return [db_response['lobby_id'], None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to get lobby id for {player_id}: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _get_random_lobby_id(self, player_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            get_random_lobby_msg = {
-                "command": "get_random_lobby_id",
-                "data": {
-                    "server_id": SERVER_ID,
-                    "player_id": player_id,
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_random_lobby_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'lobby_id' not in db_response:
-                raise Exception("Invalid response from database: missing lobby ID")
-
-            return [db_response['lobby_id'], None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to get random lobby id for {player_id}: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-
-    async def _create_lobby(self, player_id, password):
-        lang = self.langs.get(player_id, "en")
-        try:
-            lobby_data = {
-                "command": "create_lobby",
-                "data": {
-                    "id": 0,
-                    "server_id": SERVER_ID,
-                    "host_id": player_id,
-                    "game_id": 0,
-                    "is_private": bool(password.strip()),
-                    "password": password.strip(),
-                    "status": "WAITING"
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(lobby_data, timeout=5), lang)
-            if db_response is None:
-                return [False, error]
-            if 'id' not in db_response:
-                raise Exception("Invalid response from database: missing lobby ID")
-            if 'table' not in db_response or db_response['table'] != 'lobbies':
-                raise Exception("Invalid response from database: wrong table")
-
-            lobby_id = db_response['id']
-            logger.info(f"Lobby created with ID: {lobby_id}")
-
-            [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
-            if not ok: return [ok, error]
-            msg = f"{phrases.dict('lobbyCreated', lang)} \n{phrases.dict('lobbyId', lang)} - {lobby_id}"
-            if password.strip():
-                msg += f"\n{phrases.dict('lobbyPassword', lang)} - {password}\n{phrases.dict('sendPrivate', lang)}"
-            else:
-                msg += f"\n{phrases.dict('lobbyPublic', lang)}"
-
-            await self.bot.send_message(
-                chat_id=player_id,
-                text=msg,
-                reply_markup=kb.get_lobby_keyboard(True, False, lang)
-            )
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to create lobby for user {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
 
     async def _start_game_with_players(self, lobby_id, lobby_players):
         try:
@@ -1593,30 +977,16 @@ class EventHandler:
 
 
     async def _leave_lobby(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
         try:
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
                 raise Exception(error.Message())
 
-            leave_msg = {
-                "command": "leave_lobby",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
+            [is_host, error] = await self.db_communicator.leave_lobby(player_id, lobby_id)
+            if is_host is None:
+                raise Exception(error.Message())
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(leave_msg), lang)
-            if db_response is None:
-                return [None, error]
-            if 'is_host' not in db_response:
-                raise Exception("Invalid response from database: missing is_host field")
-            is_host = db_response['is_host']
-            logger.info(f"Player {player_id} left lobby {lobby_id}")
-
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 raise Exception(error.Message())
 
@@ -1624,13 +994,13 @@ class EventHandler:
             if not ok:
                 raise Exception(error.Message())
 
-
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.choose_game)
             if not ok: return [ok, error]
 
             return [True, None]
 
         except asyncio.TimeoutError:
+            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             return [False, Error(ErrorLevel.WARNING, msg)]
 
@@ -1640,40 +1010,8 @@ class EventHandler:
             error.setLobbyId(lobby_id)
             return [False, error]
 
-
-    async def _ban_player(self, lobby_id, host_id, player_id):
-        try:
-            lang = self.langs.get(host_id, "en")
-            ban_msg = {
-                "command": "ban_player",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "host_id": host_id,
-                    "player_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(ban_msg, timeout=5), lang)
-            if db_response is None:
-                return [False, error]
-
-            await self._change_player_state_by_id(player_id, PlayerStates.main_menu_state)
-            return [True, None]
-
-        except Exception as e:
-            msg = f"Failed to ban player for user {player_id}: {str(e)}"
-            if lobby_id is None:
-                return [False, Error(ErrorLevel.ERROR, msg)]
-            else:
-                error = Error(ErrorLevel.LOBBY_ERROR, msg)
-                error.setLobbyId(lobby_id)
-                return [False, error]
-
-
     async def _send_other_ban_player(self, host_id, player_id, lobby_names, lobby_players):
         try:
-            lang = self.langs.get(host_id, "en")
             banned_player_name = next((n['name'] for n in lobby_names if n['id'] == player_id), "Unknown")
 
             for player in lobby_players:
@@ -1696,73 +1034,6 @@ class EventHandler:
         except Exception as e:
             msg = f"Failed to send other ban player for user {host_id}: {str(e)}"
             return [False, Error(ErrorLevel.ERROR, msg)]
-
-
-    async def _get_blacklist(self, lobby_id, host_id):
-        lang = self.langs.get(host_id, "en")
-        try:
-            get_msg = {
-                "command": "get_blacklist",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "host_id": host_id,
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'blacklist' not in db_response:
-                raise Exception("Invalid response from database: missing blacklist data")
-            if 'banned_players' not in db_response:
-                raise Exception("Invalid response from database: missing banned_players data")
-
-            blacklist = []
-            names = db_response['banned_players']
-            for player in db_response['blacklist']:
-                blacklist.append(player)
-                blacklist[-1]['name'] = next((n['name'] for n in names if n['id'] == player['player_id']), "Unknown")
-
-            return [blacklist, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [None, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to get blacklist: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-    async def _unban_player(self, lobby_id, host_id, player_id):
-        lang = self.langs.get(host_id, "en")
-        try:
-            remove_msg = {
-                "command": "unban_player",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "host_id": host_id,
-                    "player_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
-
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(remove_msg, timeout=5), lang)
-            if db_response is None:
-                if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
-                    await self.bot.send_message(
-                        chat_id=host_id,
-                        text=phrases.dict("youDontHaveSufficientPermissions", lang)
-                    )
-                    return [True, None]
-                return [False, error]
-            return [True, None]
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to unban player {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
 
     async def _send_other_unban_player(self, host_id, player_id, unbanned_name, lobby_id, lobby_names, lobby_players):
         lang = self.langs.get(host_id, "en")
@@ -1789,106 +1060,6 @@ class EventHandler:
         except Exception as e:
             msg = f"Failed to send other unban player {host_id}: {str(e)}"
             return [False, Error(ErrorLevel.ERROR, msg)]
-        
-
-    async def _feedback(self, player_id, username, feedback_message):
-        lang = self.langs.get(player_id, "en")
-        try:
-            feedback_msg = {
-                "command": "feedback",
-                "data": {
-                    "username": username,
-                    "message": feedback_message,
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(feedback_msg, timeout=5), lang)
-            if db_response is None: return [False, error]
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to send feedback for user {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-    async def _update_lang_player(self, message, state, new_lang):
-        try:
-            player_id = message.from_user.id
-            player = {
-                "player_id": player_id,
-                "firstname": message.from_user.first_name,
-                "lastname": message.from_user.last_name,
-                "fullname": message.from_user.full_name,
-                "username": message.from_user.username,
-                "lang": new_lang,
-                "state": await state.get_state()
-            }
-            player_data = {
-                "command": "update_lang_player",
-                "data": player,
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(player_data, timeout=5), new_lang)
-            if db_response is None: return [False, error]
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", new_lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to update lang for user {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-    async def _exit_from_game(self, player_id, game_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            exit_from_game_msg = {
-                "command": "exit_from_game",
-                "data": {
-                    "player_id": player_id,
-                    "server_id": SERVER_ID,
-                    "game_id": game_id,
-                    "is_current_game": False,
-                    "is_host": False,
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(exit_from_game_msg, timeout=5), lang)
-            if db_response is None: return [False, error]
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to exit from game for user {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-    async def _set_player_ready(self, player_id, lobby_id, is_ready):
-        lang = self.langs.get(player_id, "en")
-        try:
-            set_ready_msg = {
-                "command": "set_player_ready",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id,
-                    "is_ready": is_ready
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(set_ready_msg, timeout=5), lang)
-            if db_response is None: return [False, error]
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-        except Exception as e:
-            msg = f"Failed to set player ready for user {player_id}: {str(e)}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
 
     """public--------------------------------------------------------------------------------------------------"""
     async def initGameServer(self):
@@ -1896,9 +1067,6 @@ class EventHandler:
         while retries < MAX_RETRIES:
             try:
                 server_up = False
-
-                if not self.db_server_connected:
-                    raise Exception(f"Game service error: database server are not connected")
 
                 init_server = {
                     "command": 1,  # INIT_GAME command
@@ -1915,20 +1083,11 @@ class EventHandler:
                     else:
                         raise Exception(f"Game service error: {game_response['result']}")
 
-                server_data = {
-                    "command": "get_server_games",
-                    "data": SERVER_ID,
-                }
-                [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(server_data, timeout=10), "en")
-                if db_response is None:
+                [games_data, error] = await self.db_communicator.get_server_games()
+                if games_data is None:
                     raise Exception(error.Message())
 
-                required_fields = ['games', 'players', 'player_games', 'computer_games', 'history']
-                for field in required_fields:
-                    if field not in db_response:
-                        raise Exception(f"Invalid response from database: missing {field}")
-
-                for player in db_response['players']:
+                for player in games_data['players']:
                     user_id = player['player_id']
                     state_name = player['state']
                     storage_key = StorageKey(chat_id=user_id, user_id=user_id, bot_id=self.bot.id)
@@ -1944,7 +1103,7 @@ class EventHandler:
                     return True
 
                 games = []
-                for game in db_response['games']:
+                for game in games_data['games']:
                     game_dict = {
                         "command": 18,  # RESTORE_GAME command
                         "server_id": SERVER_ID,
@@ -1955,7 +1114,7 @@ class EventHandler:
                     }
                     games.append(game_dict)
 
-                for player_game in db_response['player_games']:
+                for player_game in games_data['player_games']:
                     for game in games:
                         if player_game['game_id'] == game['game_id']:
                             game['players'].append({
@@ -1964,7 +1123,7 @@ class EventHandler:
                             })
                             break
 
-                for history in db_response['history']:
+                for history in games_data['history']:
                     for game in games:
                         if history['game_id'] == game['game_id']:
                             game['restore_data'].append({
@@ -1978,7 +1137,7 @@ class EventHandler:
                             })
                             break
 
-                for computer in db_response['computer_games']:
+                for computer in games_data['computer_games']:
                     for game in games:
                         if computer['game_id'] == game['game_id']:
                             if 'brains' not in game:
@@ -2044,7 +1203,7 @@ class EventHandler:
             "lang": lang,
             "state": await state.get_state()
         }
-        [ok, error] = await self._insert_player(player)
+        [ok, error] = await self.db_communicator.insert_player(player)
         if not ok:
             await self._handle_error(player_id, error)
             return False
@@ -2093,7 +1252,7 @@ class EventHandler:
             "lang": callback.from_user.language_code,
             "state": await state.get_state()
         }
-        [ok, error] = await self._update_player(player)
+        [ok, error] = await self.db_communicator.change_player(player)
         if not ok:
             await self._handle_error(player_id, error)
             return False
@@ -2116,7 +1275,7 @@ class EventHandler:
             "lang": message.from_user.language_code,
             "state": await state.get_state()
         }
-        [ok, error] = await self._update_player(player)
+        [ok, error] = await self.db_communicator.change_player(player)
         if not ok:
             await self._handle_error(player_id, error)
             return False
@@ -2187,7 +1346,7 @@ class EventHandler:
                 await self._handle_error(player_id, Error(ErrorLevel.WARNING, msg))
                 return False
 
-            [game_info, error] = await self._get_current_game(player_id)
+            [game_info, error] = await self.db_communicator.get_current_game(player_id)
             if game_info is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2230,14 +1389,14 @@ class EventHandler:
                 raise Exception(f"Game service not have this player steps")
 
             step_number = steps[player_i]["step"]
-            [ok, error] = await self._add_step(
-                player_id, 
-                game_id, 
-                step_number, 
-                steps[player_i]["game_value"], 
-                steps[player_i]["bulls"], 
-                steps[player_i]["cows"], 
-                not steps[player_i]["player"], 
+            [ok, error] = await self.db_communicator.add_step(
+                player_id,
+                game_id,
+                step_number,
+                steps[player_i]["game_value"],
+                steps[player_i]["bulls"],
+                steps[player_i]["cows"],
+                not steps[player_i]["player"],
                 False
                 )
             if not ok: return [False, error]
@@ -2248,12 +1407,12 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            [ok, error] = await self._update_game(game_id, player_id, game_response["game_stage"], step_number, 0)
+            [ok, error] = await self.db_communicator.update_game(game_id, player_id, game_response["game_stage"], step_number, 0)
             if not ok:
                 await self._handle_error(player_id, error)
                 return False
 
-            [names, error] = await self._get_game_names(player_id, game_id)
+            [names, error] = await self.db_communicator.get_game_names(player_id, game_id)
             if names is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2267,7 +1426,7 @@ class EventHandler:
                 if i != player_i and steps[i]["player"] and not steps[i]["finished"]:
                     unfinished_players += 1
 
-            [players, error] = await self._get_current_players(player_id, game_id)
+            [players, error] = await self.db_communicator.get_current_players(player_id, game_id)
             if players is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2395,7 +1554,7 @@ class EventHandler:
         try:
             username = message.from_user.username
             feedback_message = message.text
-            [ok, error] = await self._feedback(player_id, username, feedback_message)
+            [ok, error] = await self.db_communicator.feedback(player_id, username, feedback_message)
             if not ok:
                 await self._handle_error(player_id, error)
                 return False
@@ -2424,7 +1583,7 @@ class EventHandler:
         try:
             for lang in phrases.langs():
                 if phrases.dict('name', lang) == str(message.text):
-                    [ok, error] = await self._update_lang_player(message, state, lang)
+                    [ok, error] = await self.db_communicator.update_lang_player(message, state, lang)
                     if not ok:
                         await self._handle_error(player_id, error)
                         return False
@@ -2450,7 +1609,7 @@ class EventHandler:
         if not await self._handle_server_available(player_id):
             return False
 
-        [game_info, error] = await self._get_current_game(player_id)
+        [game_info, error] = await self.db_communicator.get_current_game(player_id)
         if game_info is None:
             await self._handle_error(player_id, error)
             return False
@@ -2471,7 +1630,7 @@ class EventHandler:
         try:
             lang = self.langs.get(player_id, "en")
 
-            [game_info, error] = await self._get_current_game(player_id)
+            [game_info, error] = await self.db_communicator.get_current_game(player_id)
             if game_info is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2492,15 +1651,24 @@ class EventHandler:
                 )
                 return False
 
-            [names, error] = await self._get_game_names(player_id, game_id)
+            [names, error] = await self.db_communicator.get_game_names(player_id, game_id)
             if names is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [ok, error] = await self._send_game_report(player_id, game_id, lang, names)
-            if not ok:
+            [game_steps, error] = await self.db_communicator.get_game_report(player_id, game_id)
+            if game_steps is None:
                 await self._handle_error(player_id, error)
                 return False
+
+            [ok, report_text] = self._generate_game_report(game_steps, lang, names)
+            if not ok:
+                raise Exception(report_text)
+
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=report_text
+            )
 
             return True
 
@@ -2522,7 +1690,7 @@ class EventHandler:
         try:
             lang = self.langs.get(player_id, "en")
 
-            [lobby_id, error] = await self._get_lobby_id(player_id, False)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, False)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2533,7 +1701,7 @@ class EventHandler:
                     await self._handle_error(player_id, error)
                     return False
 
-            [game_info, error] = await self._get_current_game(player_id)
+            [game_info, error] = await self.db_communicator.get_current_game(player_id)
             if game_info is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2567,7 +1735,7 @@ class EventHandler:
                 reply_markup=kb.main[lang]
             )
 
-            [ok, error] = await self._exit_from_game(player_id, game_id)
+            [ok, error] = await self.db_communicator.exit_from_game(player_id, game_id)
             if not ok:
                 await self._handle_error(player_id, error)
                 return False
@@ -2593,7 +1761,7 @@ class EventHandler:
             return False
         lang = self.langs.get(player_id, "en")
         try:
-            [lobby_id, error] = await self._get_lobby_id(player_id, False)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, False)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2605,7 +1773,7 @@ class EventHandler:
                 )
                 return False
 
-            [ok, error] = await self._join_lobby(player_id, lobby_id, "")
+            [ok, error] = await self.db_communicator.join_lobby(player_id, lobby_id, "")
             if not ok:
                 if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerAlreadyInLobby":
                     error = Error(ErrorLevel.ERROR, f"Error! Player already in Lobby with lobby_id - {lobby_id}")
@@ -2615,12 +1783,12 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2715,24 +1883,61 @@ class EventHandler:
         player_id = message.from_user.id
         if not await self._handle_server_available(player_id):
             return False
-        password = message.text
-        [ok, error] = await self._create_lobby(player_id, password)
-        if not ok:
-            await self._handle_error(player_id, error)
+        lang = self.langs.get(player_id, "en")
+        try:
+            password = message.text
+            [lobby_id, error] = await self.db_communicator.create_lobby(player_id, password)
+            if lobby_id is None:
+                await self._handle_error(player_id, error)
+                return False
+
+            [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
+            if not ok:
+                await self._handle_error(player_id, error)
+                return False
+
+            msg = f"{phrases.dict('lobbyCreated', lang)} \n{phrases.dict('lobbyId', lang)} - {lobby_id}\n{phrases.dict('lobbyPassword', lang)} - {password}\n{phrases.dict('sendPrivate', lang)}"
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=msg,
+                reply_markup=kb.get_lobby_keyboard(True, False, lang)
+            )
+            return True
+
+        except Exception as e:
+            msg = f"Failed to create lobby with password for user {player_id}: {str(e)}"
+            await self._handle_error(player_id, Error(ErrorLevel.ERROR, msg))
             return False
-        return True
 
 
     async def create_public_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         if not await self._handle_server_available(player_id):
             return False
-        password = ""
-        [ok, error] = await self._create_lobby(player_id, password)
-        if not ok:
-            await self._handle_error(player_id, error)
+        lang = self.langs.get(player_id, "en")
+        try:
+            [lobby_id, error] = await self.db_communicator.create_lobby(player_id, "")
+            if lobby_id is None:
+                await self._handle_error(player_id, error)
+                return False
+
+            [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
+            if not ok:
+                await self._handle_error(player_id, error)
+                return False
+
+            msg = f"{phrases.dict('lobbyCreated', lang)} \n{phrases.dict('lobbyId', lang)} - {lobby_id}\n{phrases.dict('lobbyPublic', lang)}"
+            await self.bot.send_message(
+                chat_id=player_id,
+                text=msg,
+                reply_markup=kb.get_lobby_keyboard(True, False, lang)
+            )
+            return True
+
+        except Exception as e:
+            msg = f"Failed to create public lobby for user {player_id}: {str(e)}"
+            await self._handle_error(player_id, Error(ErrorLevel.ERROR, msg))
             return False
-        return True
 
     async def enter_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
@@ -2792,11 +1997,11 @@ class EventHandler:
                 await self.change_player(message, state, PlayerStates.choose_game)
                 return False
 
-            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
-            [ok, error] = await self._join_lobby(player_id, lobby_id, password)
+            [ok, error] = await self.db_communicator.join_lobby(player_id, lobby_id, password)
             if not ok:
                 if error.Level() != ErrorLevel.WARNING:
                     await self._handle_error(player_id, error)
@@ -2819,14 +2024,14 @@ class EventHandler:
                 reply_markup=kb.get_lobby_keyboard(False, False, lang)
             )
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
@@ -2851,14 +2056,13 @@ class EventHandler:
             await self._handle_error(player_id, Error(ErrorLevel.ERROR, msg))
             return False
 
-
     async def enter_to_random_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         if not await self._handle_server_available(player_id):
             return False
         lang = self.langs.get(player_id, "en")
         try:
-            [lobby_id, error] = await self._get_random_lobby_id(player_id)
+            [lobby_id, error] = await self.db_communicator.get_random_lobby_id(player_id)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2895,13 +2099,12 @@ class EventHandler:
             return False
         lang = self.langs.get(player_id, "en")
         try:
-
-            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [is_host, error] = await self._player_is_lobby_host(player_id, lobby_id)
+            [is_host, error] = await self.db_communicator.player_is_lobby_host(player_id, lobby_id)
             if is_host is None:
                 await self._handle_error(player_id, error)
                 return False
@@ -2914,14 +2117,14 @@ class EventHandler:
                 return False
 
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
@@ -2975,19 +2178,19 @@ class EventHandler:
         lang = self.langs.get(player_id, "en")
         lobby_id = None
         try:
-            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
@@ -3012,14 +2215,27 @@ class EventHandler:
                     return False
 
             if not player_back:
-                [ok, error] = await self._ban_player(lobby_id, player_id, player_to_ban)
+                [ok, error] = await self.db_communicator.ban_player(lobby_id, player_id, player_to_ban)
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
+
+                [ok, error] = await self._change_player_state_by_id(player_to_ban, PlayerStates.main_menu_state)
+                if not ok:
+                    await self._handle_error(player_id, error)
+                    return False
+
                 [ok, error] = await self._send_other_ban_player(player_id, player_to_ban, lobby_names, lobby_players)
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
+
+                [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
+                if not ok:
+                    await self._handle_error(player_id, error)
+                    return False
+                
+                return True
 
 
             [ok, error] = await self._change_player_state_by_id(player_id, PlayerStates.in_lobby)
@@ -3060,25 +2276,25 @@ class EventHandler:
         lang = self.langs.get(player_id, "en")
         lobby_id = None
         try:
-            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [ok, error] = await self._set_player_ready(player_id, lobby_id, is_ready)
+            [ok, error] = await self.db_communicator.set_player_ready(player_id, lobby_id, is_ready)
             if not ok:
                 await self._handle_error(player_id, error)
                 return False
             logger.info(f"Player {player_id} set ready state to {is_ready} in lobby {lobby_id}")
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
                 await self._handle_error(player_id, error)
                 return False
 
-            [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+            [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
             if lobby_names is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
@@ -3114,7 +2330,7 @@ class EventHandler:
         if not await self._handle_server_available(player_id):
             return False
         lang = self.langs.get(player_id, "en")
-        [lobby_id, error] = await self._get_lobby_id(player_id, True)
+        [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
         if lobby_id is None:
             await self._handle_error(player_id, error)
             return False
@@ -3129,20 +2345,19 @@ class EventHandler:
             )
         return True
 
-
     async def start_lobby_game(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
+        lang = self.langs.get(player_id, "en")
         if not await self._handle_server_available(player_id):
             return False
-        lang = self.langs.get(player_id, "en")
         lobby_id = None
         try:
-            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [ok, error] = await self._prepare_to_start_lobby(player_id, lobby_id)
+            [ok, error] = await self.db_communicator.prepare_to_start_lobby(player_id, lobby_id)
             if not ok:
                 if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerOnlyHostCanStartGame":
                     await self.bot.send_message(
@@ -3154,7 +2369,7 @@ class EventHandler:
                     await self._handle_error(player_id, error)
                 return False
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, msg)
                 error.setLobbyId(lobby_id)
@@ -3168,7 +2383,7 @@ class EventHandler:
                 await self._handle_error(player_id, error)
                 return False
 
-            [ok, error] = await self._start_lobby_game(player_id, lobby_id, game_id)
+            [ok, error] = await self.db_communicator.start_lobby_game(player_id, lobby_id, game_id)
             if not ok:
                 await self._handle_error(player_id, error)
                 return False
@@ -3212,16 +2427,16 @@ class EventHandler:
 
     async def unban_player(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
+        lang = self.langs.get(player_id, "en")
         if not await self._handle_server_available(player_id):
             return False
         try:
-            lang = self.langs.get(player_id, "en")
-            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [blacklist, error] = await self._get_blacklist(lobby_id, player_id)
+            [blacklist, error] = await self.db_communicator.get_blacklist(lobby_id, player_id)
             if blacklist is None:
                 if error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
                     error = Error(ErrorLevel.ERROR, phrases.dict("youDontHaveSufficientPermissions", lang))
@@ -3259,14 +2474,16 @@ class EventHandler:
     async def choose_unban_player(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id):
+            return False
         try:
             unbanned_name = str(message.text)
-            [lobby_id, error] = await self._get_lobby_id(player_id, True)
+            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
             if lobby_id is None:
                 await self._handle_error(player_id, error)
                 return False
 
-            [blacklist, error] = await self._get_blacklist(lobby_id, player_id)
+            [blacklist, error] = await self.db_communicator.get_blacklist(lobby_id, player_id)
             if blacklist is None:
                 if error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
                     error = Error(ErrorLevel.ERROR, phrases.dict("youDontHaveSufficientPermissions", lang))
@@ -3290,15 +2507,19 @@ class EventHandler:
                     )
                     return False
 
-
-
             if not player_back:
-                [ok, error] = await self._unban_player(lobby_id, player_id, player_to_unban)
+                [ok, error] = await self.db_communicator.unban_player(lobby_id, player_id, player_to_unban)
                 if not ok:
+                    if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerOnlyHostCanUnbanPlayer":
+                        await self.bot.send_message(
+                            chat_id=player_id,
+                            text=phrases.dict("youDontHaveSufficientPermissions", lang)
+                        )
+                        return False
                     await self._handle_error(player_id, error)
                     return False
 
-            [lobby_players, error] = await self._get_lobby_players(player_id, lobby_id)
+            [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
                 error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                 error.setLobbyId(lobby_id)
@@ -3306,7 +2527,7 @@ class EventHandler:
                 return False
 
             if not player_back:
-                [lobby_names, error] = await self._get_lobby_names(player_id, lobby_id)
+                [lobby_names, error] = await self.db_communicator.get_lobby_names(player_id, lobby_id)
                 if lobby_names is None:
                     error = Error(ErrorLevel.LOBBY_ERROR, error.Message())
                     error.setLobbyId(lobby_id)
@@ -3336,9 +2557,4 @@ class EventHandler:
         except Exception as e:
             msg = f"Failed to unban player: {str(e)}"
             await self._handle_error(player_id, Error(ErrorLevel.ERROR, msg))
-            await self.change_player(message, state, PlayerStates.manage_blacklist)
-            await message.answer(
-                "Blacklist Management:",
-                reply_markup=kb.get_manage_blacklist_keyboard(lang)
-            )
             return False
