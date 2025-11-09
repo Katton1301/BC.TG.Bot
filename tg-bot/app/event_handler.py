@@ -118,9 +118,8 @@ class EventHandler:
             return False
         return True
 
-    async def _handle_server_available(self, user_id):
+    async def _handle_server_available(self, user_id, lang):
         if not self.db_communicator.online():
-            lang = self.langs.get(user_id, "en")
             await self.bot.send_message(
                 chat_id=user_id,
                 text=phrases.dict("dbServerUnavailableTryLater", lang),
@@ -530,8 +529,9 @@ class EventHandler:
             if player_i == -1:
                 raise Exception(f"Game service not have this player for game result")
 
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, False)
-            if lobby_id is None: return [False, error]
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, False)
+            if db_response is None: return [False, error]
+            lobby_id = db_response['lobby_id']
             for i in range(len(game_result)):
                 if game_result[i]['player'] and game_result[i]['id'] in current_player_ids:
                     [ok, result] = self._generate_game_results(game_result, i, lang, names)
@@ -1182,11 +1182,13 @@ class EventHandler:
 
     async def new_player_start(self, message: Any, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = message.from_user.language_code
+        if player_id in self.langs:
+            lang = self.langs[player_id]
+        if not await self._handle_server_available(player_id, lang):
             return False
         if player_id not in self.langs:
             self.langs[player_id] = message.from_user.language_code
-
         lang = self.langs[player_id]
         cur_state = await state.get_state()
         if cur_state is not None and not isFreeState(cur_state):
@@ -1216,11 +1218,11 @@ class EventHandler:
 
     async def help_player(self, message: Any, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         if player_id not in self.langs:
             self.langs[player_id] = message.from_user.language_code
         lang = self.langs[player_id]
+        if not await self._handle_server_available(player_id, lang):
+            return False
 
         cur_state = await state.get_state()
         if cur_state is not None and not isFreeState(cur_state):
@@ -1238,18 +1240,17 @@ class EventHandler:
 
     async def change_player(self, callback: types.CallbackQuery, state: FSMContext, new_state: State):
         player_id = callback.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         await state.set_state(new_state)
-        if player_id not in self.langs:
-            self.langs[player_id] = callback.from_user.language_code
         player = {
             "player_id": player_id,
             "firstname": callback.from_user.first_name,
             "lastname": callback.from_user.last_name,
             "fullname": callback.from_user.full_name,
             "username": callback.from_user.username,
-            "lang": callback.from_user.language_code,
+            "lang": lang,
             "state": await state.get_state()
         }
         [ok, error] = await self.db_communicator.change_player(player)
@@ -1261,18 +1262,17 @@ class EventHandler:
 
     async def change_player(self, message: types.Message, state: FSMContext, new_state: State):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         await state.set_state(new_state)
-        if player_id not in self.langs:
-            self.langs[player_id] = message.from_user.language_code
         player = {
             "player_id": player_id,
             "firstname": message.from_user.first_name,
             "lastname": message.from_user.last_name,
             "fullname": message.from_user.full_name,
             "username": message.from_user.username,
-            "lang": message.from_user.language_code,
+            "lang": lang,
             "state": await state.get_state()
         }
         [ok, error] = await self.db_communicator.change_player(player)
@@ -1284,7 +1284,8 @@ class EventHandler:
 
     async def start_single_game(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         [game_id, error] = await self._create_game(player_id, "single")
         if game_id is None:
@@ -1293,7 +1294,6 @@ class EventHandler:
         logger.info(f"Starting single game for user_id: {player_id}")
         [ok, error] = await self._start_game(game_id, player_id)
         if ok:
-            lang = self.langs.get(player_id, "en")
             await message.answer(f"{phrases.dict('gameCreated', lang)} {phrases.dict('yourTurn', lang)}\n{phrases.dict('giveUpInfo', lang)}", reply_markup=ReplyKeyboardRemove())
             await self.change_player(message, state, PlayerStates.waiting_for_number)
         else:
@@ -1304,7 +1304,8 @@ class EventHandler:
 
     async def start_random_game(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         player = {
             "player_id": player_id,
@@ -1316,7 +1317,6 @@ class EventHandler:
             "state": await state.get_state()
         }
         if self.waiting_player is None or self.waiting_player["player_id"] == player_id:
-            lang = self.langs.get(player_id, "en")
             ok = await self.change_player(message, state, PlayerStates.waiting_a_rival)
             if not ok: return
             player['state'] = await state.get_state()
@@ -1335,12 +1335,12 @@ class EventHandler:
 
     async def do_step(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         game_id = None
         steps = None
         try:
-            lang = self.langs.get(player_id, "en")
             if not message.text.isdigit():
                 msg = phrases.dict("invalidNumberFormat", lang)
                 await self._handle_error(player_id, Error(ErrorLevel.WARNING, msg))
@@ -1479,7 +1479,6 @@ class EventHandler:
             return True
 
         except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
             msg = phrases.dict("errorTimeout", lang)
             await self._handle_error(player_id, Error(ErrorLevel.WARNING, msg))
             return False
@@ -1499,13 +1498,13 @@ class EventHandler:
 
     async def start_bot_play( self, message: types.Message, state: FSMContext ):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         [game_id, error] = await self._create_game(player_id, "versus_bot")
         if game_id is None:
             await self._handle_error(player_id, error)
             return False
-        lang = self.langs.get(player_id, "en")
         try:
             level = None
             if phrases.checkPhrase("easy", str(message.text)):
@@ -1548,8 +1547,8 @@ class EventHandler:
 
     async def send_feedback(self, message: types.Message, state: FSMContext ):
         player_id = message.from_user.id
-        lang = self.langs.get(message.from_user.id, "en")
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         try:
             username = message.from_user.username
@@ -1578,7 +1577,8 @@ class EventHandler:
 
     async def change_lang(self, message: types.Message, state: FSMContext ):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang_old = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang_old):
             return False
         try:
             for lang in phrases.langs():
@@ -1606,7 +1606,8 @@ class EventHandler:
 
     async def give_up(self, message: types.Message, state: FSMContext ):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
 
         [game_info, error] = await self.db_communicator.get_current_game(player_id)
@@ -1625,11 +1626,10 @@ class EventHandler:
 
     async def game_report(self, callback: types.CallbackQuery, state: FSMContext ):
         player_id = callback.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         try:
-            lang = self.langs.get(player_id, "en")
-
             [game_info, error] = await self.db_communicator.get_current_game(player_id)
             if game_info is None:
                 await self._handle_error(player_id, error)
@@ -1685,15 +1685,15 @@ class EventHandler:
 
     async def exit_to_menu(self, message: Any, force):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         try:
-            lang = self.langs.get(player_id, "en")
-
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, False)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, False)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
 
             if lobby_id != 0:
                 [ok, error] = await self._leave_lobby(player_id, lobby_id)
@@ -1757,14 +1757,15 @@ class EventHandler:
 
     async def stay_in_lobby(self, callback: types.CallbackQuery, state: FSMContext):
         player_id = callback.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, False)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, False)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
 
             if lobby_id == 0:
                 await self.bot.send_message(
@@ -1836,9 +1837,9 @@ class EventHandler:
 
     async def create_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
             await self.change_player(message, state, PlayerStates.choose_lobby_creation_type)
             await message.answer(
@@ -1858,9 +1859,9 @@ class EventHandler:
 
     async def create_private_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
             await self.change_player(message, state, PlayerStates.wait_password)
             await message.answer(
@@ -1881,9 +1882,9 @@ class EventHandler:
 
     async def create_lobby_with_password(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
             password = message.text
             [lobby_id, error] = await self.db_communicator.create_lobby(player_id, password)
@@ -1912,9 +1913,9 @@ class EventHandler:
 
     async def create_public_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
             [lobby_id, error] = await self.db_communicator.create_lobby(player_id, "")
             if lobby_id is None:
@@ -1941,9 +1942,9 @@ class EventHandler:
 
     async def enter_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
             await self.change_player(message, state, PlayerStates.choose_lobby_type)
             await message.answer(
@@ -1964,10 +1965,10 @@ class EventHandler:
 
     async def enter_by_lobby_id(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
+        lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
             return False
         if not message.text.isdigit():
-            lang = self.langs.get(player_id, "en")
             msg = f"{phrases.dict('invalidLobbyId', lang)} {phrases.dict('useOnlyDigits', lang)}"
             await self._handle_error(player_id, Error(ErrorLevel.WARNING, msg))
             return False
@@ -1982,11 +1983,10 @@ class EventHandler:
 
     async def enter_by_lobby_id_and_password(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
-
-        password = message.text
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
+        password = message.text
         try:
 
             if not password.isdigit() or len(password) > 10:
@@ -1996,11 +1996,11 @@ class EventHandler:
                 )
                 await self.change_player(message, state, PlayerStates.choose_game)
                 return False
-
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
             [ok, error] = await self.db_communicator.join_lobby(player_id, lobby_id, password)
             if not ok:
                 if error.Level() != ErrorLevel.WARNING:
@@ -2058,9 +2058,9 @@ class EventHandler:
 
     async def enter_to_random_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
             [lobby_id, error] = await self.db_communicator.get_random_lobby_id(player_id)
             if lobby_id is None:
@@ -2095,19 +2095,16 @@ class EventHandler:
 
     async def delete_player(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         try:
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
-
-            [is_host, error] = await self.db_communicator.player_is_lobby_host(player_id, lobby_id)
-            if is_host is None:
-                await self._handle_error(player_id, error)
-                return False
+            lobby_id = db_response['lobby_id']
+            is_host = db_response['is_host']
 
             if not is_host:
                 await self.bot.send_message(
@@ -2173,15 +2170,16 @@ class EventHandler:
 
     async def choose_ban_player(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         lobby_id = None
         try:
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
 
             [lobby_players, error] = await self.db_communicator.get_lobby_players(player_id, lobby_id)
             if lobby_players is None:
@@ -2271,15 +2269,16 @@ class EventHandler:
 
     async def set_player_ready_state(self, message: types.Message, state: FSMContext, is_ready: bool):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
+        if not await self._handle_server_available(player_id, lang):
+            return False
         lobby_id = None
         try:
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
 
             [ok, error] = await self.db_communicator.set_player_ready(player_id, lobby_id, is_ready)
             if not ok:
@@ -2327,13 +2326,14 @@ class EventHandler:
 
     async def leave_lobby(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
-        if not await self._handle_server_available(player_id):
-            return False
         lang = self.langs.get(player_id, "en")
-        [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-        if lobby_id is None:
+        if not await self._handle_server_available(player_id, lang):
+            return False
+        [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+        if db_response is None: 
             await self._handle_error(player_id, error)
             return False
+        lobby_id = db_response['lobby_id']
         [ok, error] = await self._leave_lobby(player_id, lobby_id)
         if not ok:
             await self._handle_error(player_id, error)
@@ -2348,14 +2348,15 @@ class EventHandler:
     async def start_lobby_game(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         lang = self.langs.get(player_id, "en")
-        if not await self._handle_server_available(player_id):
+        if not await self._handle_server_available(player_id, lang):
             return False
         lobby_id = None
         try:
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
 
             [ok, error] = await self.db_communicator.prepare_to_start_lobby(player_id, lobby_id)
             if not ok:
@@ -2428,13 +2429,14 @@ class EventHandler:
     async def unban_player(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         lang = self.langs.get(player_id, "en")
-        if not await self._handle_server_available(player_id):
+        if not await self._handle_server_available(player_id, lang):
             return False
         try:
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
 
             [blacklist, error] = await self.db_communicator.get_blacklist(lobby_id, player_id)
             if blacklist is None:
@@ -2474,14 +2476,15 @@ class EventHandler:
     async def choose_unban_player(self, message: types.Message, state: FSMContext):
         player_id = message.from_user.id
         lang = self.langs.get(player_id, "en")
-        if not await self._handle_server_available(player_id):
+        if not await self._handle_server_available(player_id, lang):
             return False
         try:
             unbanned_name = str(message.text)
-            [lobby_id, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if lobby_id is None:
+            [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
+            if db_response is None: 
                 await self._handle_error(player_id, error)
                 return False
+            lobby_id = db_response['lobby_id']
 
             [blacklist, error] = await self.db_communicator.get_blacklist(lobby_id, player_id)
             if blacklist is None:

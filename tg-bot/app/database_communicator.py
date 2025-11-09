@@ -642,7 +642,9 @@ class DBCommunicator:
                 return [None, error]
             if 'lobby_id' not in db_response:
                 raise Exception("Invalid response from database: missing lobby ID")
-            return [db_response['lobby_id'], None]
+            if 'is_host' not in db_response:
+                raise Exception("Invalid response from database: missing host flag")
+            return [db_response, None]
 
         except Exception as e:
             msg = f"Failed to get lobby id for {player_id}: {str(e)}"
@@ -714,31 +716,6 @@ class DBCommunicator:
 
         except Exception as e:
             msg = f"Failed to prepare lobby for {player_id}: {str(e)}"
-            return [None, Error(ErrorLevel.ERROR, msg)]
-
-        return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def player_is_lobby_host(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
-        try:
-            is_host_msg = {
-                "command": "player_is_lobby_host",
-                "data": {
-                    "lobby_id": lobby_id,
-                    "player_id": player_id
-                },
-                "timestamp": str(datetime.now())
-            }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(is_host_msg, timeout=5), lang)
-            if db_response is None:
-                return [None, error]
-            if 'is_host' not in db_response:
-                raise Exception("Invalid response from database: missing is_host field")
-
-            return [db_response['is_host'], None]
-
-        except Exception as e:
-            msg = f"Failed to get player is host for user {player_id}: {str(e)}"
             return [None, Error(ErrorLevel.ERROR, msg)]
 
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]

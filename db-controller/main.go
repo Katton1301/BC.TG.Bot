@@ -536,17 +536,6 @@ func main() {
                 }
                 err = handlePrepareToStartLobby(conn, kafkaMsg.CorrelationId, checkData)
 
-            case "player_is_lobby_host":
-                var checkData struct {
-                    LobbyId   int64  `json:"lobby_id"`
-                    PlayerId  int64  `json:"player_id"`
-                }
-                if err := json.Unmarshal(kafkaMsg.Data, &checkData); err != nil {
-                    log.Printf("Failed to parse lobby id: %v", err)
-                    continue
-                }
-                err = handlePlayerIsLobbyHost(conn, kafkaMsg.CorrelationId, checkData)
-
             case "ban_player":
                 var banData struct {
                     LobbyId   int64  `json:"lobby_id"`
@@ -1510,16 +1499,18 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
         joinData.LobbyId, joinData.PlayerId).Scan(&existingPlayer, &existingAccess)
 
     if err == nil {
-        if !hasAccess {
-                if err := tx.Commit(context.Background()); err != nil {
-                    response.Answer = "Error"
-                    response.Error = fmt.Sprintf("failed to commit transaction: %v", err)
-                    return sendGenericResponse(response)
-                }
-                response.Answer = "Warning"
-                response.Error = "DBAnswerPasswordNeeded"
+        if existingAccess {
+            _, err = tx.Exec(context.Background(),
+                `UPDATE lobby_players SET in_lobby = true WHERE lobby_id = $1 AND player_id = $2`,
+                joinData.LobbyId, joinData.PlayerId)
+            if err != nil {
+                tx.Rollback(context.Background())
+                response.Answer = "Error"
+                response.Error = fmt.Sprintf("failed to update player in_lobby: %v", err)
                 return sendGenericResponse(response)
-        } else if !existingAccess {
+            }
+            log.Printf("Updated player %d in_lobby to true in lobby %d", joinData.PlayerId, joinData.LobbyId)
+        } else if hasAccess {
             if playerCount >= lobbyPlayerLimit {
                 tx.Rollback(context.Background())
                 response.Answer = "Warning"
@@ -1537,16 +1528,14 @@ func handleJoinLobby(conn *pgx.Conn, correlation_id string, joinData struct {
             }
             log.Printf("Updated player %d access to true and in_lobby to true in lobby %d", joinData.PlayerId, joinData.LobbyId)
         } else {
-            _, err = tx.Exec(context.Background(),
-                `UPDATE lobby_players SET in_lobby = true WHERE lobby_id = $1 AND player_id = $2`,
-                joinData.LobbyId, joinData.PlayerId)
-            if err != nil {
-                tx.Rollback(context.Background())
+            if err := tx.Commit(context.Background()); err != nil {
                 response.Answer = "Error"
-                response.Error = fmt.Sprintf("failed to update player in_lobby: %v", err)
+                response.Error = fmt.Sprintf("failed to commit transaction: %v", err)
                 return sendGenericResponse(response)
             }
-            log.Printf("Updated player %d in_lobby to true in lobby %d", joinData.PlayerId, joinData.LobbyId)
+            response.Answer = "Warning"
+            response.Error = "DBAnswerPasswordNeeded"
+            return sendGenericResponse(response)
         }
     } else {
         if err == pgx.ErrNoRows {
@@ -1728,40 +1717,6 @@ func handleLeaveLobby(conn *pgx.Conn, correlation_id string, lobbyPlayerData Lob
     response.Answer = "OK"
     response.Data = data
     log.Printf("Player %d left lobby %d", lobbyPlayerData.PlayerId, lobbyPlayerData.LobbyId)
-    return sendGenericResponse(response)
-}
-
-func handlePlayerIsLobbyHost(conn *pgx.Conn, correlation_id string, checkData struct {
-    LobbyId   int64  `json:"lobby_id"`
-    PlayerId  int64  `json:"player_id"`
-}) error {
-    var isHost bool
-    response := GenericResponse{
-        CorrelationId: correlation_id,
-        Answer:       "Unknown",
-        Error:         "",
-        Data:          struct{}{},
-    }
-
-    err := conn.QueryRow(context.Background(),
-        `SELECT host
-         FROM lobby_players
-         WHERE lobby_id = $1
-         AND player_id = $2`, checkData.LobbyId, checkData.PlayerId).Scan(&isHost)
-    if err != nil {
-        response.Answer = "Error"
-        response.Error = fmt.Sprintf("failed to query lobby host: %v", err)
-        return sendGenericResponse(response)
-    }
-
-    data := struct {
-        IsHost bool `json:"is_host"`
-    }{
-        IsHost: isHost,
-    }
-
-    response.Answer = "OK"
-    response.Data = data
     return sendGenericResponse(response)
 }
 
@@ -2364,28 +2319,29 @@ func handleGetRandomLobbyId(conn *pgx.Conn, correlation_id string, inputData str
 }
 
 func handleGetLobbyId(conn *pgx.Conn, correlation_id string, player_id int64) error {
-    var lobbyId int64
     response := GenericResponse{
         CorrelationId: correlation_id,
         Answer:       "Unknown",
         Error:         "",
         Data:          struct{}{},
     }
+    var lobbyId int64
+    var isHost bool
     err := conn.QueryRow(context.Background(),
-        `SELECT lobby_id
+        `SELECT lobby_id, host
          FROM lobby_players
-         WHERE player_id = $1`, player_id).Scan(&lobbyId)
+         WHERE player_id = $1`, player_id).Scan(&lobbyId, &isHost)
     if err != nil {
         response.Answer = "Warning"
         response.Error = "DBAnswerPlayerNotInLobby"
         return sendGenericResponse(response)
     }
     data := struct {
-        Table string `json:"table"`
         LobbyId int64 `json:"lobby_id"`
+        IsHost bool `json:"is_host"`
     }{
-        Table:        "lobby_players",
         LobbyId: lobbyId,
+        IsHost: isHost,
     }
 
     response.Answer = "OK"
