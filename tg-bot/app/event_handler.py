@@ -5,6 +5,7 @@ from typing import Any
 from aiogram import types
 from kafka_handler import KafkaHandler
 from database_communicator import DBCommunicator
+from game_communicator import GameCommunicator
 from phrases import phrases
 import keyboards as kb
 from aiogram.fsm.state import State
@@ -18,8 +19,6 @@ from error import Error, ErrorLevel
 import sys
 # Settings
 SERVER_ID = 1
-MAX_RETRIES = 5
-RETRY_DELAY = 60
 
 
 import logging
@@ -30,7 +29,6 @@ class EventHandler:
         self.bot: Bot = bot
         self.dp: Dispatcher = dp
         self.running = False
-        self.game_server_connected = False
         kafka_bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
         kafka_config = {
             "db_listen_topic": os.environ['TOPIC_DB_LISTEN'],
@@ -44,17 +42,19 @@ class EventHandler:
         kb.create_keyboards()
 
         self.kafka = KafkaHandler(kafka_bootstrap_servers, kafka_config)
-        self.db_communicator = DBCommunicator(self.kafka, self.langs, SERVER_ID)
+        self.db_communicator = DBCommunicator(self, SERVER_ID)
+        self.game_communicator = GameCommunicator(self, SERVER_ID)
 
     async def start(self):
         await self.kafka.start()
         await self.db_communicator.start()
+        await self.game_communicator.start()
         self.running = True
-        self.server_check_task = asyncio.create_task(self._check_server_availability())
 
     async def stop(self):
         await self.kafka.stop()
         await self.db_communicator.stop()
+        await self.game_communicator.stop()
         self.running = False
         if self.server_check_task:
             self.server_check_task.cancel()
@@ -65,59 +65,6 @@ class EventHandler:
 
     """private-------------------------------------------------------------------------------------------------"""
 
-    async def _check_server_availability(self):
-        while self.running:
-            try:
-                if self.game_server_connected:
-                    if not await self._ping_game_server():
-                        self.game_server_connected = False
-                        logger.error("Game server disconnected")
-                    else:
-                        logger.info("Ping game server successfully")
-                else:
-                    logger.info("Attempting to reconnect to game server...")
-                    if await self.initGameServer():
-                        self.game_server_connected = True
-                        logger.info("Game server reconnected successfully")
-                    else:
-                        logger.warning("Failed to reconnect to game server")
-
-                await asyncio.sleep(60)
-            except Exception as e:
-                msg = f"Failed to connect to game server: {str(e)}"
-                logger.error(msg)
-                await asyncio.sleep(60)
-
-
-    async def _ping_game_server(self):
-        try:
-            init_server = {
-                "command": 2,  # SERVER_INFO command
-                "server_id": SERVER_ID,
-            }
-            game_response = await self.kafka.request_to_game(init_server, timeout=5)
-            ok = await self._verify_game_server_response(game_response)
-            ok = ok and game_response['result'] == 1
-            return ok
-        except Exception as e:
-            msg = f"Failed to ping game server: {str(e)}"
-            logger.error(msg)
-            return False
-
-    async def _verify_game_server_response(self, response, user_id=None):
-        if response is None or "timeout" in response and response["timeout"]:
-            if self.game_server_connected:
-                logger.error("Game server timeout detected, marking as unavailable")
-                self.game_server_connected = False
-                if user_id:
-                    lang = self.langs.get(user_id, "en")
-                    await self.bot.send_message(
-                        chat_id=user_id,
-                        text=phrases.dict("gameServerUnavailable", lang)
-                    )
-            return False
-        return True
-
     async def _handle_server_available(self, user_id, lang):
         if not self.db_communicator.online():
             await self.bot.send_message(
@@ -126,7 +73,7 @@ class EventHandler:
                 reply_markup=kb.main[lang]
             )
             return False
-        if not self.game_server_connected:
+        if not self.game_communicator.online():
             lang = self.langs.get(user_id, "en")
             await self.bot.send_message(
                 chat_id=user_id,
@@ -234,22 +181,10 @@ class EventHandler:
                 return [None, error]
 
             [ok, error] = await self.db_communicator.add_player_game(player_id, player_id, game_id, True)
-            if not ok:
-                return [None, error]
+            if not ok: return [None, error]
 
-            game_msg = {
-                "command": 4,  # Assuming 4 is CREATE_GAME command
-                "server_id": SERVER_ID,
-                "player_id": player_id,
-                "game_id": game_id
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_game_server_response(game_response, player_id):
-                raise Exception("Server response verification failed")
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid create game response from game service")
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                raise Exception(f"Game service error: {game_response['result']}")
+            [ok, error] = await self.game_communicator.create_game(player_id, game_id)
+            if not ok: return [None, error]
 
             return [game_id, None]
 
@@ -264,127 +199,40 @@ class EventHandler:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def _add_player_to_game(self, game_id, player_id):
-        try:
-            [ok, error] = await self.db_communicator.add_player_game(player_id, player_id, game_id, False)
-            if not ok: return [False, error]
+        [ok, error] = await self.db_communicator.add_player_game(player_id, player_id, game_id, False)
+        if not ok: return [False, error]
 
-            game_msg = {
-                "command": 5,  # Assuming 5 is ADD_PLAYER command
-                "server_id": SERVER_ID,
-                "player_id": player_id,
-                "game_id": game_id
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_game_server_response(game_response, player_id):
-                raise Exception("Server response verification failed")
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid start game response from game service")
+        [ok, error] = await self.game_communicator.add_player(player_id, game_id)
+        if not ok: return [False, error]
 
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                raise Exception(f"Game service error: {game_response['result']}")
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to add player for user {player_id} with error: {e}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+        return [True, None]
 
     async def _add_computer_to_game(self, game_id, player_id, level):
-        lang = self.langs.get(player_id, "en")
-        try:
-            [computer_id, error] = await self.db_communicator.create_computer(player_id, game_id, level)
-            if computer_id is None:
-                return [False, error]
-
-            game_msg = {
-                "command": 6,  # Assuming 6 is ADD_COMPUTER command
-                "computer_id": computer_id,
-                "player_id": player_id,
-                "server_id": SERVER_ID,
-                "game_id": game_id,
-                "game_brain": level,
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_game_server_response(game_response, player_id):
-                raise Exception("Server response verification failed")
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid add computer response from game service")
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                raise Exception(f"Game service error: {game_response['result']}")
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to add player for user {player_id} with error: {e}"
-            return [False, Error(ErrorLevel.ERROR, msg)]
-
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
-
-    async def _start_game(self, game_id, player_id):
-        try:
-            game_msg = {
-                "command": 7,  # Assuming 7 is START_GAME command
-                "server_id": SERVER_ID,
-                "player_id": player_id,
-                "game_id": game_id
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_game_server_response(game_response, player_id):
-                raise Exception("Server response verification failed")
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid start game response from game service")
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                raise Exception(f"Game service error: {game_response['result']}")
-
-            [ok, error] = await self.db_communicator.update_game(game_id, player_id, game_response["game_stage"], 0, game_response["secret_value"])
-            if not ok: return [False, error]
-
-            logger.info(f"Game {game_id} fully initialized")
-
-            return [True, None]
-
-        except asyncio.TimeoutError:
-            lang = self.langs.get(player_id, "en")
-            msg = phrases.dict("errorTimeout", lang)
-            return [False, Error(ErrorLevel.WARNING, msg)]
-
-        except Exception as e:
-            msg = f"Failed to create game for user {player_id} with error: {e}"
-            error = Error(ErrorLevel.GAME_ERROR, msg)
-            error.setGameId(game_id)
+        [computer_id, error] = await self.db_communicator.create_computer(player_id, game_id, level)
+        if computer_id is None:
             return [False, error]
 
-        return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
+        [ok, error] = await self.game_communicator.add_computer(player_id, game_id, computer_id, level)
+        if not ok: return [False, error]
+
+        return [True, None]
+
+    async def _start_game(self, game_id, player_id):
+        [game_response, error] = await self.game_communicator.start_game(player_id, game_id)
+        if game_response is None: return [False, error]
+
+        [ok, error] = await self.db_communicator.update_game(game_id, player_id, game_response["game_stage"], 0, game_response["secret_value"])
+        if not ok: return [False, error]
+
+        logger.info(f"Game {game_id} fully initialized")
+
+        return [True, None]
 
     async def _give_up_in_game(self, player_id, game_id, force):
         lang = self.langs.get(player_id, "en")
         try:
-            game_msg = {
-                "command": 11,  # Assuming 11 is PLAYER_GIVE_UP command
-                "server_id": SERVER_ID,
-                "player_id": player_id,
-                "game_id": game_id
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_game_server_response(game_response, player_id):
-                raise Exception("Server response verification failed")
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid give up game response from game service")
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                raise Exception(f"Game service error: {game_response['result']}")
-            if "steps" not in game_response:
-                raise Exception(f"Game service not have this player steps")
+            [game_response, error] = await self.game_communicator.player_give_up(player_id, game_id)
+            if game_response is None: return [False, error]
 
             steps = game_response['steps']
 
@@ -395,7 +243,7 @@ class EventHandler:
                     unfinished_players += 1
 
             if player_i == -1:
-                raise Exception(f"Game service not have this player steps")
+                raise Exception(f"Game server not have this player steps")
 
             [ok, error] = await self.db_communicator.add_step(player_id, game_id, 0, 0, 0, 0, False, True)
             if not ok: return [False, error]
@@ -464,19 +312,8 @@ class EventHandler:
         lang = self.langs.get(player_id, "en")
         try:
             if force:
-                game_msg = {
-                    "command": 15,  # Assuming 15 is FINISH_GAME command
-                    "server_id": SERVER_ID,
-                    "player_id": player_id,
-                    "game_id": game_id,
-                }
-                game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-                if not await self._verify_game_server_response(game_response, player_id):
-                    raise Exception("Server response verification failed")
-                if not game_response or 'result' not in game_response:
-                    raise Exception("Invalid do step response from game service")
-                if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                    raise Exception(f"Game service error: {game_response['result']}")
+                [game_response, error] = await self.game_communicator.finish_game(player_id, game_id)
+                if game_response is None: return [False, error]
 
                 steps = game_response['steps']
                 [ok, error] = await self._save_computer_steps(steps, player_id, game_id)
@@ -510,36 +347,25 @@ class EventHandler:
 
             current_player_ids = [d['player_id'] for d in players]
 
-            game_msg = {
-                "command": 16,  # Assuming 16 is GAME_RESULT command
-                "server_id": SERVER_ID,
-                "player_id": player_id,
-                "game_id": game_id,
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_game_server_response(game_response, player_id):
-                raise Exception("Server response verification failed")
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid do step response from game service")
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
-                raise Exception(f"Game service error: {game_response['result']}")
+            [game_response, error] = await self.game_communicator.game_result(player_id, game_id)
+            if game_response is None: return [False, error]
 
-            game_result = game_response['game_results']
-            player_i = next((i for i, step in enumerate(game_result) if step['player'] and step['id'] == player_id), -1)
+            game_results = game_response['game_results']
+            player_i = next((i for i, step in enumerate(game_results) if step['player'] and step['id'] == player_id), -1)
             if player_i == -1:
-                raise Exception(f"Game service not have this player for game result")
+                raise Exception(f"Game server not have this player for game result")
 
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, False)
             if db_response is None: return [False, error]
             lobby_id = db_response['lobby_id']
-            for i in range(len(game_result)):
-                if game_result[i]['player'] and game_result[i]['id'] in current_player_ids:
-                    [ok, result] = self._generate_game_results(game_result, i, lang, names)
+            for i in range(len(game_results)):
+                if game_results[i]['player'] and game_results[i]['id'] in current_player_ids:
+                    [ok, result] = self._generate_game_results(game_results, i, lang, names)
                     if not ok: return [ok, Error(ErrorLevel.ERROR, result)]
                     if lobby_id == 0:
-                        await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.full_game_menu[lang] )
+                        await self.bot.send_message( chat_id=game_results[i]['id'], text=result, reply_markup=kb.full_game_menu[lang] )
                     else:
-                        await self.bot.send_message( chat_id=game_result[i]['id'], text=result, reply_markup=kb.full_game_menu_with_lobby[lang] )
+                        await self.bot.send_message( chat_id=game_results[i]['id'], text=result, reply_markup=kb.full_game_menu_with_lobby[lang] )
             return [True, None]
 
         except asyncio.TimeoutError:
@@ -1063,121 +889,89 @@ class EventHandler:
 
     """public--------------------------------------------------------------------------------------------------"""
     async def initGameServer(self):
-        retries = 0
-        while retries < MAX_RETRIES:
-            try:
-                server_up = False
+        try:
+            server_up = False
 
-                init_server = {
-                    "command": 1,  # INIT_GAME command
-                    "server_id": SERVER_ID,
-                }
-                game_response = await self.kafka.request_to_game(init_server, timeout=5)
-                if "timeout" in game_response and game_response["timeout"]:
-                    raise asyncio.TimeoutError()
-                if not game_response or 'result' not in game_response:
-                    raise Exception("Invalid response from game service")
-                if game_response['result'] != 1:  # SUCCESS code
-                    if game_response['result'] == 4: # SERVER_ALREADY_REGESTERED
-                        server_up = True
-                    else:
-                        raise Exception(f"Game service error: {game_response['result']}")
-
-                [games_data, error] = await self.db_communicator.get_server_games()
-                if games_data is None:
+            [ok, error] = await self.game_communicator.init_game()
+            if not ok:
+                if error.Message() == "GameAnswerError4": # SERVER_ALREADY_REGESTERED
+                    server_up = True
+                else:
                     raise Exception(error.Message())
 
-                for player in games_data['players']:
-                    user_id = player['player_id']
-                    state_name = player['state']
-                    storage_key = StorageKey(chat_id=user_id, user_id=user_id, bot_id=self.bot.id)
-                    state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
-                    await state.set_state(state_name)
-                    self.langs[user_id] = player['lang']
+            [games_data, error] = await self.db_communicator.get_server_games()
+            if games_data is None:
+                raise Exception(error.Message())
 
-                    if await state.get_state() == PlayerStates.waiting_a_rival:
-                        self.waiting_player = player
-                    logger.info(f"restore user - {user_id} state - {await state.get_state()}")
+            for player in games_data['players']:
+                user_id = player['player_id']
+                state_name = player['state']
+                storage_key = StorageKey(chat_id=user_id, user_id=user_id, bot_id=self.bot.id)
+                state = FSMContext(storage=self.dp.fsm.storage, key=storage_key)
+                await state.set_state(state_name)
+                self.langs[user_id] = player['lang']
 
-                if server_up:
-                    return True
+                if await state.get_state() == PlayerStates.waiting_a_rival:
+                    self.waiting_player = player
+                logger.info(f"restore user - {user_id} state - {await state.get_state()}")
 
-                games = []
-                for game in games_data['games']:
-                    game_dict = {
-                        "command": 18,  # RESTORE_GAME command
-                        "server_id": SERVER_ID,
-                        "game_id": game['id'],
-                        "game_value": game['secret_value'],
-                        "restore_data": [],
-                        "players": [],
-                    }
-                    games.append(game_dict)
-
-                for player_game in games_data['player_games']:
-                    for game in games:
-                        if player_game['game_id'] == game['game_id']:
-                            game['players'].append({
-                                "id": player_game['player_id'],
-                                "is_host": player_game['is_host'],
-                            })
-                            break
-
-                for history in games_data['history']:
-                    for game in games:
-                        if history['game_id'] == game['game_id']:
-                            game['restore_data'].append({
-                                "id": history['player_id'],
-                                "player": not history['is_computer'],
-                                "bulls": history['bulls'],
-                                "cows": history['cows'],
-                                "step": history['step'],
-                                "game_value": history['game_value'],
-                                "give_up": history['is_give_up']
-                            })
-                            break
-
-                for computer in games_data['computer_games']:
-                    for game in games:
-                        if computer['game_id'] == game['game_id']:
-                            if 'brains' not in game:
-                                game['brains'] = []
-                            game['brains'].append({
-                                "id": computer['computer_id'],
-                                "player_id": computer['player_id'],
-                                "brain": computer['game_brain'],
-                            })
-
-                for game in games:
-                    logger.info(f"restore game {game['game_id']}")
-                    game_response = await self.kafka.request_to_game(game, timeout=5)
-                    if "timeout" in game_response and game_response["timeout"]:
-                        raise asyncio.TimeoutError()
-                    if not game_response or 'result' not in game_response:
-                        raise Exception("Invalid start game response from game service")
-
-
-                    if game_response['result'] != 1:  # SUCCESS code
-                        raise Exception(f"Game service error: {game_response['result']}")
-
+            if server_up:
                 return True
 
-            except asyncio.TimeoutError:
-                retries += 1
-                logger.error(f"Timeout during init game server (attempt {retries}/{MAX_RETRIES})")
-                if retries < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-                continue
+            games = []
+            for game in games_data['games']:
+                game_dict = {
+                    "game_id": game['id'],
+                    "secret_value": game['secret_value'],
+                    "restore_data": [],
+                    "players": [],
+                }
+                games.append(game_dict)
 
-            except Exception as e:
-                retries += 1
-                logger.exception(f"Failed to init game server (attempt {retries}/{MAX_RETRIES}): {str(e)}")
-                if retries < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-                continue
+            for player_game in games_data['player_games']:
+                for game in games:
+                    if player_game['game_id'] == game['game_id']:
+                        game['players'].append({
+                            "id": player_game['player_id'],
+                            "is_host": player_game['is_host'],
+                        })
+                        break
 
-        logger.critical("Failed to initialize game server after maximum retries")
-        return False
+            for history in games_data['history']:
+                for game in games:
+                    if history['game_id'] == game['game_id']:
+                        game['restore_data'].append({
+                            "id": history['player_id'],
+                            "player": not history['is_computer'],
+                            "bulls": history['bulls'],
+                            "cows": history['cows'],
+                            "step": history['step'],
+                            "game_value": history['game_value'],
+                            "give_up": history['is_give_up']
+                        })
+                        break
+
+            for computer in games_data['computer_games']:
+                for game in games:
+                    if computer['game_id'] == game['game_id']:
+                        if 'brains' not in game:
+                            game['brains'] = []
+                        game['brains'].append({
+                            "id": computer['computer_id'],
+                            "player_id": computer['player_id'],
+                            "brain": computer['game_brain'],
+                        })
+
+            for game in games:
+                logger.info(f"restore game {game['game_id']}")
+                [ok, error] = await self.game_communicator.restore_game(game)
+                if not ok:
+                    raise Exception(f"Game server error: {error.Message()}")
+            return True
+
+        except Exception as e:
+            logger.exception(f"Failed to init game server: {str(e)}")
+            return False
 
 
     async def new_player_start(self, message: Any, state: FSMContext):
@@ -1353,40 +1147,31 @@ class EventHandler:
             game_id = game_info['id']
 
             game_value = int(message.text)
-            game_msg = {
-                "command": 8,  # Assuming 8 is PLAYER_STEP command
-                "server_id": SERVER_ID,
-                "player_id": player_id,
-                "game_id": game_id,
-                "game_value": game_value,
-            }
-            game_response = await self.kafka.request_to_game(game_msg, timeout=5)
-            if not await self._verify_game_server_response(game_response, player_id):
-                raise Exception("Server response verification failed")
-            if not game_response or 'result' not in game_response:
-                raise Exception("Invalid do step response from game service")
+            [game_response, error] = await self.game_communicator.player_step(player_id, game_id, game_value)
 
-            if game_response['result'] != 1:  # Assuming 1 is SUCCESS code
+            if game_response is None:  # Assuming 1 is SUCCESS
 
-                if game_response['result'] == 13:  # Assuming 13 is INVALID_GAME_VALUE code
+                if error.Message() == "GameAnswerError13":  # Assuming 13 is INVALID_GAME_VALUE
                     msg = phrases.dict("errorInvalidGameValue", lang)
                     await self._handle_error(player_id, Error(ErrorLevel.WARNING, msg))
                     return False
 
-                if game_response['result'] == 20:  # Assuming 20 is ERROR_PLAYER_ALREADY_MADE_STEP code
+                if error.Message() == "GameAnswerError20":  # Assuming 20 is ERROR_PLAYER_ALREADY_MADE_STEP
                     msg = phrases.dict("errorNotAllPlayersMadeStep", lang)
                     await self._handle_error(player_id, Error(ErrorLevel.WARNING, msg))
                     return False
 
-                raise Exception(f"Game service error: {game_response['result']}")
+                msg = f"Game server error: {error.Message()}"
+                await self._handle_error(player_id, Error(ErrorLevel.ERROR, msg))
+                return False
 
             if "steps" not in game_response:
-                raise Exception(f"Game service not have this player steps")
+                raise Exception(f"Game server not have this player steps")
 
             steps = game_response['steps']
             player_i = next((i for i, step in enumerate(steps) if step['player'] and step['id'] == player_id), -1)
             if player_i == -1:
-                raise Exception(f"Game service not have this player steps")
+                raise Exception(f"Game server not have this player steps")
 
             step_number = steps[player_i]["step"]
             [ok, error] = await self.db_communicator.add_step(
@@ -1690,7 +1475,7 @@ class EventHandler:
             return False
         try:
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, False)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -1762,7 +1547,7 @@ class EventHandler:
             return False
         try:
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, False)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -1997,7 +1782,7 @@ class EventHandler:
                 await self.change_player(message, state, PlayerStates.choose_game)
                 return False
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -2100,7 +1885,7 @@ class EventHandler:
             return False
         try:
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -2176,7 +1961,7 @@ class EventHandler:
         lobby_id = None
         try:
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -2232,7 +2017,7 @@ class EventHandler:
                 if not ok:
                     await self._handle_error(player_id, error)
                     return False
-                
+
                 return True
 
 
@@ -2275,7 +2060,7 @@ class EventHandler:
         lobby_id = None
         try:
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -2330,7 +2115,7 @@ class EventHandler:
         if not await self._handle_server_available(player_id, lang):
             return False
         [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-        if db_response is None: 
+        if db_response is None:
             await self._handle_error(player_id, error)
             return False
         lobby_id = db_response['lobby_id']
@@ -2353,7 +2138,7 @@ class EventHandler:
         lobby_id = None
         try:
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -2433,7 +2218,7 @@ class EventHandler:
             return False
         try:
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']
@@ -2481,7 +2266,7 @@ class EventHandler:
         try:
             unbanned_name = str(message.text)
             [db_response, error] = await self.db_communicator.get_lobby_id(player_id, True)
-            if db_response is None: 
+            if db_response is None:
                 await self._handle_error(player_id, error)
                 return False
             lobby_id = db_response['lobby_id']

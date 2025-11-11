@@ -10,9 +10,8 @@ MAX_RETRIES = 5
 RETRY_DELAY = 60
 
 class DBCommunicator:
-    def __init__(self, _kafka, _langs, _server_id):
-        self.kafka = _kafka
-        self.langs = _langs
+    def __init__(self, _event_handler, _server_id):
+        self.eh = _event_handler
         self.server_id = _server_id
         self.server_connected = False
         self.running = False
@@ -23,7 +22,7 @@ class DBCommunicator:
         self.server_check_task = asyncio.create_task(self._check_server_availability())
 
     async def stop(self):
-        await self.kafka.stop()
+        await self.eh.kafka.stop()
         self.running = False
         self.server_connected = False
         if self.server_check_task:
@@ -44,10 +43,10 @@ class DBCommunicator:
                         attempts += 1
                         logger.info("Database server is not responding")
                         await asyncio.sleep(RETRY_DELAY / 2)
-                        
+
                 if attempts >= MAX_RETRIES:
                     self.server_connected = False
-                    logger.error("Database server diconnected")
+                    logger.error("Database server disconnected")
                 else:
                     self.server_connected = True
                     logger.info("Database server is online")
@@ -86,7 +85,7 @@ class DBCommunicator:
             ping_msg = {
                 "command": "ping",
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(ping_msg, timeout=10), "en")
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(ping_msg, timeout=10), "en")
             if db_response is None:
                 return False
             return True
@@ -97,13 +96,13 @@ class DBCommunicator:
 
     async def insert_player(self, player: Any):
         try:
-            lang = self.langs.get(player['player_id'], "en")
+            lang = self.eh.langs.get(player['player_id'], "en")
             player_data = {
                 "command": "insert_player",
                 "data": player,
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(player_data, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(player_data, timeout=5), lang)
             if db_response is None: return [False, error]
             logger.info(f"Successfully sent player insert for user_id: {player['player_id']}")
             return [True, None]
@@ -116,13 +115,13 @@ class DBCommunicator:
 
     async def change_player(self, player: Any):
         try:
-            lang = self.langs.get(player['player_id'], "en")
+            lang = self.eh.langs.get(player['player_id'], "en")
             player_data = {
                 "command": "change_player",
                 "data": player,
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(player_data, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(player_data, timeout=5), lang)
             if db_response is None: return [False, error]
             logger.info(f"Successfully sent player update for user_id: {player['player_id']}")
             return [True, None]
@@ -150,7 +149,7 @@ class DBCommunicator:
                 "data": player,
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(player_data, timeout=5), new_lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(player_data, timeout=5), new_lang)
             if db_response is None: return [False, error]
             return [True, None]
 
@@ -161,7 +160,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def create_game(self, player_id, mode):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             create_msg = {
                 "command": "create_game",
@@ -175,7 +174,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(create_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'id' not in db_response:
@@ -194,7 +193,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def update_game(self, game_id, player_id, game_stage, step, secret_value):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             start_game_message = {
                 "command": "update_game",
@@ -208,7 +207,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(start_game_message, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(start_game_message, timeout=5), lang)
             if db_response is None:
                 return [False, error]
 
@@ -221,7 +220,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def create_computer(self, player_id, game_id, level):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             create_msg = {
                 "command": "create_computer",
@@ -235,7 +234,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(create_msg, timeout=5), lang)
             if db_response is None:
                 return [False, error]
             if 'id' not in db_response:
@@ -252,7 +251,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def add_player_game(self, user_id, player_id, game_id, is_host):
-        lang = self.langs.get(user_id, "en")
+        lang = self.eh.langs.get(user_id, "en")
         try:
             add_player_msg = {
                 "command": "add_player_game",
@@ -265,7 +264,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(add_player_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(add_player_msg, timeout=5), lang)
             if db_response is None: return [False, error]
             logger.info(f"Player {player_id} added to game {game_id}")
             return [True, None]
@@ -277,7 +276,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def feedback(self, player_id, username, feedback_message):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             feedback_msg = {
                 "command": "feedback",
@@ -287,7 +286,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(feedback_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(feedback_msg, timeout=5), lang)
             if db_response is None: return [False, error]
             return [True, None]
 
@@ -298,13 +297,13 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_current_game(self, player_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             get_current_game_msg = {
                     "command": "get_current_game",
                     "data": player_id,
                 }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_current_game_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_current_game_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'id' not in db_response or 'finished' not in db_response:
@@ -319,7 +318,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def exit_from_game(self, player_id, game_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             exit_from_game_msg = {
                 "command": "exit_from_game",
@@ -332,7 +331,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(exit_from_game_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(exit_from_game_msg, timeout=5), lang)
             if db_response is None: return [False, error]
             return [True, None]
 
@@ -343,13 +342,13 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_game_report(self, player_id, game_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             get_game_report_msg = {
                     "command": "get_game_report",
                     "data": game_id,
                 }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_game_report_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_game_report_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'steps' not in db_response:
@@ -369,7 +368,7 @@ class DBCommunicator:
                 "command": "get_server_games",
                 "data": self.server_id,
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(server_data, timeout=10), "en")
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(server_data, timeout=10), "en")
             if db_response is None:
                 raise Exception(error.Message())
 
@@ -387,7 +386,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def add_step(self, player_id, game_id, step, game_value, bulls, cows, is_computer, is_give_up):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             step_message = {
                 "command": "add_step",
@@ -405,7 +404,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(step_message, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(step_message, timeout=5), lang)
             if db_response is None:
                 return [False, error]
             return [True, None]
@@ -417,7 +416,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_game_names(self, player_id, game_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             create_msg = {
                 "command": "get_game_names",
@@ -425,7 +424,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(create_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(create_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'names' not in db_response:
@@ -440,13 +439,13 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_current_players(self, player_id, game_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             get_current_players_msg = {
                 "command": "get_current_players",
                 "data": game_id,
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_current_players_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_current_players_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'players' not in db_response:
@@ -461,7 +460,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def create_lobby(self, player_id, password):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             lobby_data = {
                 "command": "create_lobby",
@@ -477,7 +476,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(lobby_data, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(lobby_data, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'id' not in db_response:
@@ -497,7 +496,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def join_lobby(self, player_id, lobby_id, password):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             join_data = {
                 "command": "join_lobby",
@@ -509,7 +508,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(join_data, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(join_data, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             return [True, None]
@@ -521,7 +520,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def leave_lobby(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             leave_msg = {
                 "command": "leave_lobby",
@@ -531,7 +530,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(leave_msg), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(leave_msg), lang)
             if db_response is None:
                 return [None, error]
             if 'is_host' not in db_response:
@@ -547,7 +546,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def set_player_ready(self, player_id, lobby_id, is_ready):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             set_ready_msg = {
                 "command": "set_player_ready",
@@ -558,7 +557,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(set_ready_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(set_ready_msg, timeout=5), lang)
             if db_response is None: return [False, error]
             return [True, None]
 
@@ -569,7 +568,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def start_lobby_game(self, player_id, lobby_id, game_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             start_game_msg = {
                 "command": "start_lobby_game",
@@ -581,7 +580,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(start_game_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(start_game_msg, timeout=5), lang)
             if db_response is None:
                 return [False, error]
             if 'id' not in db_response:
@@ -598,7 +597,7 @@ class DBCommunicator:
         return [False, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_random_lobby_id(self, player_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             get_random_lobby_msg = {
                 "command": "get_random_lobby_id",
@@ -609,7 +608,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_random_lobby_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_random_lobby_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'lobby_id' not in db_response:
@@ -624,7 +623,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_lobby_id(self, player_id, isNecessary):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             get_lobby_msg = {
                 "command": "get_lobby_id",
@@ -632,13 +631,13 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_lobby_msg, timeout=5), lang)
             if db_response is None:
                 if error.Level() == ErrorLevel.WARNING and error.Message() == "DBAnswerPlayerNotInLobby":
                     if isNecessary:
                         raise Exception("Invalid response from database: Player is not in the lobby")
                     else:
-                        return [0, None]
+                        return [{'lobby_id': 0, 'is_host': False}, None]
                 return [None, error]
             if 'lobby_id' not in db_response:
                 raise Exception("Invalid response from database: missing lobby ID")
@@ -653,7 +652,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_lobby_players(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             get_lobby_players_msg = {
                 "command": "get_lobby_players",
@@ -661,7 +660,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_players_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_lobby_players_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'players' not in db_response:
@@ -676,7 +675,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_lobby_names(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             get_lobby_names_msg = {
                 "command": "get_lobby_names",
@@ -684,7 +683,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_lobby_names_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_lobby_names_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'names' not in db_response:
@@ -699,7 +698,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def prepare_to_start_lobby(self, player_id, lobby_id):
-        lang = self.langs.get(player_id, "en")
+        lang = self.eh.langs.get(player_id, "en")
         try:
             check_ready_msg = {
                 "command": "prepare_to_start_lobby",
@@ -709,7 +708,7 @@ class DBCommunicator:
                 },
                 "timestamp": str(datetime.now())
             }
-            [bd_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(check_ready_msg, timeout=5), lang)
+            [bd_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(check_ready_msg, timeout=5), lang)
             if bd_response is None:
                 return [None, error]
             return [True, None]
@@ -722,7 +721,7 @@ class DBCommunicator:
 
     async def ban_player(self, lobby_id, host_id, player_id):
         try:
-            lang = self.langs.get(host_id, "en")
+            lang = self.eh.langs.get(host_id, "en")
             ban_msg = {
                 "command": "ban_player",
                 "data": {
@@ -733,7 +732,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(ban_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(ban_msg, timeout=5), lang)
             if db_response is None:
                 return [False, error]
             return [True, None]
@@ -745,7 +744,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def unban_player(self, lobby_id, host_id, player_id):
-        lang = self.langs.get(host_id, "en")
+        lang = self.eh.langs.get(host_id, "en")
         try:
             remove_msg = {
                 "command": "unban_player",
@@ -757,7 +756,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(remove_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(remove_msg, timeout=5), lang)
             if db_response is None:
                 return [False, error]
             return [True, None]
@@ -769,7 +768,7 @@ class DBCommunicator:
         return [None, Error(ErrorLevel.ERROR, "Unexpected end of function")]
 
     async def get_blacklist(self, lobby_id, host_id):
-        lang = self.langs.get(host_id, "en")
+        lang = self.eh.langs.get(host_id, "en")
         try:
             get_msg = {
                 "command": "get_blacklist",
@@ -780,7 +779,7 @@ class DBCommunicator:
                 "timestamp": str(datetime.now())
             }
 
-            [db_response, error] = self._handle_db_server_response(await self.kafka.request_to_db(get_msg, timeout=5), lang)
+            [db_response, error] = self._handle_db_server_response(await self.eh.kafka.request_to_db(get_msg, timeout=5), lang)
             if db_response is None:
                 return [None, error]
             if 'blacklist' not in db_response:
